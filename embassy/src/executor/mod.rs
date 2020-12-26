@@ -5,5 +5,5 @@ mod timer_executor;
 pub(crate) use timer_executor::current_timer_queue;
 
 pub use embassy_macros::task;
-pub use executor::{Executor, SpawnError, SpawnToken, Task};
+pub use executor::{Executor, SpawnError, SpawnedTask, Task};
 pub use timer_executor::TimerExecutor;

@@ -180,7 +180,7 @@ impl<F: Future + 'static> Task<F> {
         }
     }
 
-    pub unsafe fn spawn(pool: &'static [Self], future: impl FnOnce() -> F) -> SpawnToken {
+    pub unsafe fn spawn(pool: &'static [Self], future: impl FnOnce() -> F) -> SpawnedTask {
         for task in pool {
             let state = STATE_RUNNING | STATE_QUEUED;
             if task
@@ -193,13 +193,13 @@ impl<F: Future + 'static> Task<F> {
                 task.header.poll_fn.write(Self::poll);
                 task.future.write(future());
 
-                return SpawnToken {
+                return SpawnedTask {
                     header: Some(NonNull::new_unchecked(&task.header as *const Header as _)),
                 };
             }
         }
 
-        return SpawnToken { header: None };
+        return SpawnedTask { header: None };
     }
 
     unsafe fn poll(p: *mut Header) {
@@ -225,15 +225,15 @@ unsafe impl<F: Future + 'static> Sync for Task<F> {}
 //=============
 // Spawn token
 
-#[must_use = "Calling a task function does nothing on its own. To spawn a task, pass the result to Executor::spawn()"]
-pub struct SpawnToken {
+#[must_use = "Calling a task function does nothing on its own. You must pass the result to Executor::spawn()"]
+pub struct SpawnedTask {
     header: Option<NonNull<Header>>,
 }
 
-impl Drop for SpawnToken {
+impl Drop for SpawnedTask {
     fn drop(&mut self) {
-        // TODO maybe we can deallocate the task instead.
-        panic!("Please do not drop SpawnToken instances")
+        // TODO deallocate the task instead.
+        panic!("SpawnedTask instances may not be dropped. Pass them to Executor::Spawn")
     }
 }
 
@@ -262,7 +262,7 @@ impl Executor {
     }
 
     /// Spawn a future on this executor.
-    pub fn spawn(&'static self, token: SpawnToken) -> Result<(), SpawnError> {
+    pub fn spawn(&'static self, token: SpawnedTask) -> Result<(), SpawnError> {
         let header = token.header;
         mem::forget(token);
 

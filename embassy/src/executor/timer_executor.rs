@@ -1,4 +1,4 @@
-use super::executor::{Executor, SpawnError, SpawnToken};
+use super::executor::{Executor, SpawnError, SpawnedTask};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use futures_intrusive::timer as fi;
@@ -34,7 +34,7 @@ impl<A: Alarm> TimerExecutor<A> {
     /// Spawn a future on this executor.
     ///
     /// safety: can only be called from the executor thread
-    pub fn spawn(&'static self, token: SpawnToken) -> Result<(), SpawnError> {
+    pub fn spawn(&'static self, token: SpawnedTask) -> Result<(), SpawnError> {
         self.inner.spawn(token)
     }
 

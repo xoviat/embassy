@@ -89,7 +89,7 @@ pub fn task(args: TokenStream, item: TokenStream) -> TokenStream {
     task_fn.sig.ident = format_ident!("task");
 
     let result = quote! {
-        #visibility fn #name(#args) -> ::embassy::executor::SpawnToken {
+        #visibility fn #name(#args) -> ::embassy::executor::SpawnedTask {
             #task_fn
             type F = impl ::core::future::Future + 'static;
             static POOL: [::embassy::executor::Task<F>; #pool_size] = [::embassy::executor::Task::new(); #pool_size];
