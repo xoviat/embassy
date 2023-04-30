@@ -980,7 +980,9 @@ mod eio {
 pub use buffered::*;
 #[cfg(feature = "nightly")]
 mod buffered;
+#[cfg(dma)]
 mod rx_ringbuffered;
+#[cfg(dma)]
 pub use rx_ringbuffered::RingBufferedUartRx;
 
 #[cfg(usart_v1)]
