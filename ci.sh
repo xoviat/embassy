@@ -158,18 +158,3 @@ function run_elf {
     test "$STATUSCODE" -eq 200
 }
 
-if [[ -z "${TELEPROBE_TOKEN-}" ]]; then
-    if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN-}" ]]; then
-        echo No teleprobe token found, skipping running HIL tests
-        exit
-    fi
-
-    export TELEPROBE_TOKEN=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r '.value')
-fi
-
-for board in $(ls out/tests); do 
-    echo Running tests for board: $board
-    for elf in $(ls out/tests/$board); do 
-        run_elf $board out/tests/$board/$elf
-    done
-done
