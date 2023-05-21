@@ -23,5 +23,8 @@ async fn main(_spawner: Spawner) {
         info!("low");
         led.set_low();
         Timer::after(Duration::from_millis(300)).await;
+
+        let _k = 1;
+        let _j = 2;
     }
 }
