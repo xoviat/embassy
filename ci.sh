@@ -8,36 +8,36 @@ export DEFMT_LOG=trace
 
 TARGET=$(rustc -vV | sed -n 's|host: ||p')
 
-RUN_STM32=false
-RUN_NRF=false
-RUN_RP=false
-RUN_CORE=false
+BUILD_STM32=false
+BUILD_NRF=false
+BUILD_RP=false
+BUILD_CORE=false
 
 git fetch --depth 1 origin test-master
 git diff --name-only HEAD..origin/test-master | while read -r line; do
     if [[ "$line" =~ ^tests/stm32.*$ ]]; then
-        RUN_STM32=true
+        BUILD_STM32=true
     elif [[ "$line" =~ ^tests/nrf.*$ ]]; then
-        RUN_NRF=true
+        BUILD_NRF=true
     elif [[ "$line" =~ ^tests/rp.*$ ]]; then
-        RUN_RP=true
+        BUILD_RP=true
     elif [[ "$line" =~ ^examples/stm32.*$ ]]; then
-        RUN_STM32=true
+        BUILD_STM32=true
     elif [[ "$line" =~ ^examples/nrf.*$ ]]; then
-        RUN_NRF=true
+        BUILD_NRF=true
     elif [[ "$line" =~ ^examples/rp.*$ ]]; then
-        RUN_RP=true
+        BUILD_RP=true
     elif [[ "$line" =~ ^embassy-stm32.*$ ]]; then
-        RUN_STM32=true
+        BUILD_STM32=true
     elif [[ "$line" =~ ^embassy-nrf.*$ ]]; then
-        RUN_NRF=true
+        BUILD_NRF=true
     elif [[ "$line" =~ ^embassy-rp.*$ ]]; then
-        RUN_RP=true 
+        BUILD_RP=true 
     else
-        RUN_CORE=true
-        RUN_STM32=true
-        RUN_NRF=true
-        RUN_RP=true
+        BUILD_CORE=true
+        BUILD_STM32=true
+        BUILD_NRF=true
+        BUILD_RP=true
     fi
 done
 
