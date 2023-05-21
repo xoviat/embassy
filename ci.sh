@@ -50,7 +50,7 @@ while read -r line; do
         BUILD_NRF=true
         BUILD_RP=true
     fi
-done < < (git diff --name-only HEAD..origin/test-master)
+done < <(git diff --name-only HEAD..origin/test-master)
 
 echo "BUILD CORE: $BUILD_CORE"
 
