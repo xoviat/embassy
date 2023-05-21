@@ -12,6 +12,14 @@ git fetch --depth 1 origin test-master
 git diff --name-only HEAD..origin/test-master | while read -r line; do
   printf 'line: %s\n' "$line"
   [[ "$line" =~ ^tests/stm32.*$ ]] && echo "matched stm32 test"
+  [[ "$line" =~ ^tests/nrf.*$ ]] && echo "matched nrf test"
+  [[ "$line" =~ ^tests/rp.*$ ]] && echo "matched nrf test"
+  [[ "$line" =~ ^examples/stm32.*$ ]] && echo "matched stm32 examples"
+  [[ "$line" =~ ^examples/nrf.*$ ]] && echo "matched nrf examples"
+  [[ "$line" =~ ^examples/rp.*$ ]] && echo "matched rp examples"
+  [[ "$line" =~ ^embassy-stm32.*$ ]] && echo "matched stm32 lib"
+  [[ "$line" =~ ^embassy-nrf.*$ ]] && echo "matched nrf lib"
+  [[ "$line" =~ ^embassy-rp.*$ ]] && echo "matched rp lib"
 done
 
 # BUILD_EXTRA=""
