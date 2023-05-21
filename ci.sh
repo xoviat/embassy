@@ -42,7 +42,7 @@ git diff --name-only HEAD..origin/test-master | while read -r line; do
 done
 
 BUILD_CMD=""
-if [ "$BUILD_CORE" = true]; then
+if [ "$BUILD_CORE" = true ]; then
     echo "building core libraries"
     BUILD_CMD="$BUILD_CMD" \
 >       " --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv7em-none-eabi --features nightly" \
