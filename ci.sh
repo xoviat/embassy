@@ -8,19 +8,62 @@ export DEFMT_LOG=trace
 
 TARGET=$(rustc -vV | sed -n 's|host: ||p')
 
+RUN_STM32=false
+RUN_NRF=false
+RUN_RP=false
+RUN_CORE=false
+
 git fetch --depth 1 origin test-master
 git diff --name-only HEAD..origin/test-master | while read -r line; do
-  printf 'line: %s\n' "$line"
-  [[ "$line" =~ ^tests/stm32.*$ ]] && echo "matched stm32 test"
-  [[ "$line" =~ ^tests/nrf.*$ ]] && echo "matched nrf test"
-  [[ "$line" =~ ^tests/rp.*$ ]] && echo "matched nrf test"
-  [[ "$line" =~ ^examples/stm32.*$ ]] && echo "matched stm32 examples"
-  [[ "$line" =~ ^examples/nrf.*$ ]] && echo "matched nrf examples"
-  [[ "$line" =~ ^examples/rp.*$ ]] && echo "matched rp examples"
-  [[ "$line" =~ ^embassy-stm32.*$ ]] && echo "matched stm32 lib"
-  [[ "$line" =~ ^embassy-nrf.*$ ]] && echo "matched nrf lib"
-  [[ "$line" =~ ^embassy-rp.*$ ]] && echo "matched rp lib"
+    if [[ "$line" =~ ^tests/stm32.*$ ]]; then
+        RUN_STM32=true
+    elif [[ "$line" =~ ^tests/nrf.*$ ]]; then
+        RUN_NRF=true
+    elif [[ "$line" =~ ^tests/rp.*$ ]]; then
+        RUN_RP=true
+    elif [[ "$line" =~ ^examples/stm32.*$ ]]; then
+        RUN_STM32=true
+    elif [[ "$line" =~ ^examples/nrf.*$ ]]; then
+        RUN_NRF=true
+    elif [[ "$line" =~ ^examples/rp.*$ ]]; then
+        RUN_RP=true
+    elif [[ "$line" =~ ^embassy-stm32.*$ ]]; then
+        RUN_STM32=true
+    elif [[ "$line" =~ ^embassy-nrf.*$ ]]; then
+        RUN_NRF=true
+    elif [[ "$line" =~ ^embassy-rp.*$ ]]; then
+        RUN_RP=true 
+    else
+        RUN_CORE=true
+        RUN_STM32=true
+        RUN_NRF=true
+        RUN_RP=true
+    fi
 done
+
+BUILD_CMD=""
+if [ "$BUILD_CORE" = true]; then
+    echo "building core libraries"
+    BUILD_CMD="$BUILD_CMD" \
+>       " --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv7em-none-eabi --features nightly" \
+>       " --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv7em-none-eabi --features nightly,log" \
+>       " --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv7em-none-eabi --features nightly,defmt" \
+>       " --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv6m-none-eabi --features nightly,defmt" \
+>       " --- build --release --manifest-path embassy-sync/Cargo.toml --target thumbv6m-none-eabi --features nightly,defmt" \
+>       " --- build --release --manifest-path embassy-time/Cargo.toml --target thumbv6m-none-eabi --features nightly,unstable-traits,defmt,defmt-timestamp-uptime,tick-hz-32_768,generic-queue-8" \
+>       " --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,medium-ethernet" \
+>       " --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,dhcpv4,medium-ethernet" \
+>       " --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,dhcpv4,medium-ethernet,unstable-traits" \
+>       " --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,dhcpv4,medium-ethernet,nightly" \
+>       " --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,dhcpv4,medium-ethernet,unstable-traits,nightly" \
+>       " --- build --release --manifest-path examples/wasm/Cargo.toml --target wasm32-unknown-unknown --out-dir out/examples/wasm" \
+>       " --- build --release --manifest-path tests/riscv32/Cargo.toml --target riscv32imac-unknown-none-elf"
+fi
+
+echo "$BUILD_CMD"
+
+cargo batch "$BUILD_CMD"
+
 
 # BUILD_EXTRA=""
 # if [ $TARGET = "x86_64-unknown-linux-gnu" ]; then
@@ -30,17 +73,6 @@ done
 # find . -name '*.rs' -not -path '*target*' | xargs rustfmt --check  --skip-children --unstable-features --edition 2018
 # 
 # cargo batch  \
-#     --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv7em-none-eabi --features nightly \
-#     --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv7em-none-eabi --features nightly,log \
-#     --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv7em-none-eabi --features nightly,defmt \
-#     --- build --release --manifest-path embassy-executor/Cargo.toml --target thumbv6m-none-eabi --features nightly,defmt \
-#     --- build --release --manifest-path embassy-sync/Cargo.toml --target thumbv6m-none-eabi --features nightly,defmt \
-#     --- build --release --manifest-path embassy-time/Cargo.toml --target thumbv6m-none-eabi --features nightly,unstable-traits,defmt,defmt-timestamp-uptime,tick-hz-32_768,generic-queue-8 \
-#     --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,medium-ethernet \
-#     --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,dhcpv4,medium-ethernet \
-#     --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,dhcpv4,medium-ethernet,unstable-traits \
-#     --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,dhcpv4,medium-ethernet,nightly \
-#     --- build --release --manifest-path embassy-net/Cargo.toml --target thumbv7em-none-eabi --features defmt,tcp,udp,dns,dhcpv4,medium-ethernet,unstable-traits,nightly \
 #     --- build --release --manifest-path embassy-nrf/Cargo.toml --target thumbv7em-none-eabi --features nightly,nrf52805,gpiote,time-driver-rtc1 \
 #     --- build --release --manifest-path embassy-nrf/Cargo.toml --target thumbv7em-none-eabi --features nightly,nrf52810,gpiote,time-driver-rtc1 \
 #     --- build --release --manifest-path embassy-nrf/Cargo.toml --target thumbv7em-none-eabi --features nightly,nrf52811,gpiote,time-driver-rtc1 \
@@ -141,7 +173,6 @@ done
 #     --- build --release --manifest-path examples/boot/bootloader/nrf/Cargo.toml --target thumbv8m.main-none-eabihf --features embassy-nrf/nrf9160-ns \
 #     --- build --release --manifest-path examples/boot/bootloader/rp/Cargo.toml --target thumbv6m-none-eabi \
 #     --- build --release --manifest-path examples/boot/bootloader/stm32/Cargo.toml --target thumbv7em-none-eabi --features embassy-stm32/stm32wl55jc-cm4 \
-#     --- build --release --manifest-path examples/wasm/Cargo.toml --target wasm32-unknown-unknown --out-dir out/examples/wasm \
 #     --- build --release --manifest-path tests/stm32/Cargo.toml --target thumbv7m-none-eabi --features stm32f103c8 --out-dir out/tests/bluepill-stm32f103c8 \
 #     --- build --release --manifest-path tests/stm32/Cargo.toml --target thumbv7em-none-eabi --features stm32f429zi --out-dir out/tests/nucleo-stm32f429zi \
 #     --- build --release --manifest-path tests/stm32/Cargo.toml --target thumbv7em-none-eabi --features stm32g491re --out-dir out/tests/nucleo-stm32g491re \
@@ -153,7 +184,6 @@ done
 #     --- build --release --manifest-path tests/stm32/Cargo.toml --target thumbv7em-none-eabi --features stm32u585ai --out-dir out/tests/iot-stm32u585ai \
 #     --- build --release --manifest-path tests/rp/Cargo.toml --target thumbv6m-none-eabi --out-dir out/tests/rpi-pico \
 #     --- build --release --manifest-path tests/nrf/Cargo.toml --target thumbv7em-none-eabi --out-dir out/tests/nrf52840-dk \
-#     --- build --release --manifest-path tests/riscv32/Cargo.toml --target riscv32imac-unknown-none-elf \
 #     $BUILD_EXTRA
 # 
 # 
