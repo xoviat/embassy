@@ -14,7 +14,7 @@ BUILD_RP=false
 BUILD_CORE=false
 
 git fetch --depth 1 origin test-master
-git diff --name-only HEAD..origin/test-master | while read -r line; do
+while read -r line; do
     echo "line: $line"
     if [[ "$line" =~ ^tests/stm32.*$ ]]; then
         echo "matched 1"
@@ -50,7 +50,9 @@ git diff --name-only HEAD..origin/test-master | while read -r line; do
         BUILD_NRF=true
         BUILD_RP=true
     fi
-done
+done < < (git diff --name-only HEAD..origin/test-master)
+
+echo "BUILD CORE: $BUILD_CORE"
 
 BUILD_CMD=""
 if [ "$BUILD_CORE" = true ]; then
