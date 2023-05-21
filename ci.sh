@@ -8,7 +8,8 @@ export DEFMT_LOG=trace
 
 TARGET=$(rustc -vV | sed -n 's|host: ||p')
 
-git diff --name-only HEAD..origin/master | while read -r line; do
+git fetch --depth 1 origin test-master
+git diff --name-only HEAD..origin/test-master | while read -r line; do
   printf 'line: %s\n' "$line"
   [[ "$line" =~ ^tests/stm32.*$ ]] && echo "matched stm32 test"
 done
