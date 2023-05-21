@@ -15,25 +15,36 @@ BUILD_CORE=false
 
 git fetch --depth 1 origin test-master
 git diff --name-only HEAD..origin/test-master | while read -r line; do
+    echo "line: $line"
     if [[ "$line" =~ ^tests/stm32.*$ ]]; then
+        echo "matched 1"
         BUILD_STM32=true
     elif [[ "$line" =~ ^tests/nrf.*$ ]]; then
+        echo "matched 2"
         BUILD_NRF=true
     elif [[ "$line" =~ ^tests/rp.*$ ]]; then
+        echo "matched 3"
         BUILD_RP=true
     elif [[ "$line" =~ ^examples/stm32.*$ ]]; then
+        echo "matched 4"
         BUILD_STM32=true
     elif [[ "$line" =~ ^examples/nrf.*$ ]]; then
+        echo "matched 5"
         BUILD_NRF=true
     elif [[ "$line" =~ ^examples/rp.*$ ]]; then
+        echo "matched 6"
         BUILD_RP=true
     elif [[ "$line" =~ ^embassy-stm32.*$ ]]; then
+        echo "matched 7"
         BUILD_STM32=true
     elif [[ "$line" =~ ^embassy-nrf.*$ ]]; then
+        echo "matched 8"
         BUILD_NRF=true
     elif [[ "$line" =~ ^embassy-rp.*$ ]]; then
+        echo "matched 9"
         BUILD_RP=true 
     else
+        echo "matched 10"
         BUILD_CORE=true
         BUILD_STM32=true
         BUILD_NRF=true
