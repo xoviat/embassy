@@ -4,6 +4,8 @@ use aligned::{Aligned, A4};
 use bit_field::BitField;
 
 use crate::cmd::{AclDataPacket, CmdPacket};
+#[cfg(feature = "mac")]
+use crate::consts::C_SIZE_CMD_STRING;
 use crate::consts::{POOL_SIZE, TL_CS_EVT_SIZE, TL_EVT_HEADER_SIZE, TL_PACKET_HEADER_SIZE};
 use crate::unsafe_linked_list::LinkedListNode;
 
@@ -104,7 +106,6 @@ pub struct ThreadTable {
     pub otcmdrsp_buffer: *const u8,
 }
 
-// TODO: use later
 #[derive(Debug)]
 #[repr(C, align(4))]
 pub struct LldTestsTable {
@@ -176,6 +177,9 @@ pub struct RefTable {
     pub mem_manager_table: *const MemManagerTable,
     pub traces_table: *const TracesTable,
     pub mac_802_15_4_table: *const Mac802_15_4Table,
+    pub zigbee_table: *const ZigbeeTable,
+    pub lld_tests_table: *const LldTestsTable,
+    pub ble_lld_table: *const BleLldTable,
 }
 
 // --------------------- ref table ---------------------
@@ -191,11 +195,11 @@ pub static mut TL_BLE_TABLE: MaybeUninit<BleTable> = MaybeUninit::uninit();
 #[link_section = "MB_MEM1"]
 pub static mut TL_THREAD_TABLE: MaybeUninit<ThreadTable> = MaybeUninit::uninit();
 
-// #[link_section = "MB_MEM1"]
-// pub static mut TL_LLD_TESTS_TABLE: MaybeUninit<LldTestTable> = MaybeUninit::uninit();
+#[link_section = "MB_MEM1"]
+pub static mut TL_LLD_TESTS_TABLE: MaybeUninit<LldTestsTable> = MaybeUninit::uninit();
 
-// #[link_section = "MB_MEM1"]
-// pub static mut TL_BLE_LLD_TABLE: MaybeUninit<BleLldTable> = MaybeUninit::uninit();
+#[link_section = "MB_MEM1"]
+pub static mut TL_BLE_LLD_TABLE: MaybeUninit<BleLldTable> = MaybeUninit::uninit();
 
 #[link_section = "MB_MEM1"]
 pub static mut TL_SYS_TABLE: MaybeUninit<SysTable> = MaybeUninit::uninit();
@@ -209,8 +213,8 @@ pub static mut TL_TRACES_TABLE: MaybeUninit<TracesTable> = MaybeUninit::uninit()
 #[link_section = "MB_MEM1"]
 pub static mut TL_MAC_802_15_4_TABLE: MaybeUninit<Mac802_15_4Table> = MaybeUninit::uninit();
 
-// #[link_section = "MB_MEM1"]
-// pub static mut TL_ZIGBEE_TABLE: MaybeUninit<ZigbeeTable> = MaybeUninit::uninit();
+#[link_section = "MB_MEM1"]
+pub static mut TL_ZIGBEE_TABLE: MaybeUninit<ZigbeeTable> = MaybeUninit::uninit();
 
 // --------------------- tables ---------------------
 #[link_section = "MB_MEM1"]
@@ -251,13 +255,20 @@ pub static mut SYS_CMD_BUF: MaybeUninit<CmdPacket> = MaybeUninit::uninit();
 pub static mut SYS_SPARE_EVT_BUF: MaybeUninit<Aligned<A4, [u8; TL_PACKET_HEADER_SIZE + TL_EVT_HEADER_SIZE + 255]>> =
     MaybeUninit::uninit();
 
+#[cfg(feature = "mac")]
+#[link_section = "MB_MEM2"]
+pub static mut MAC_802_15_4_CNFINDNOT: MaybeUninit<Aligned<A4, [u8; C_SIZE_CMD_STRING]>> = MaybeUninit::uninit();
+
+#[cfg(feature = "ble")]
 #[link_section = "MB_MEM1"]
 pub static mut BLE_CMD_BUFFER: MaybeUninit<CmdPacket> = MaybeUninit::uninit();
 
+#[cfg(feature = "ble")]
 #[link_section = "MB_MEM2"]
 pub static mut BLE_SPARE_EVT_BUF: MaybeUninit<Aligned<A4, [u8; TL_PACKET_HEADER_SIZE + TL_EVT_HEADER_SIZE + 255]>> =
     MaybeUninit::uninit();
 
+#[cfg(feature = "ble")]
 #[link_section = "MB_MEM2"]
 //                                 fuck these "magic" numbers from ST ---v---v
 pub static mut HCI_ACL_DATA_BUFFER: MaybeUninit<Aligned<A4, [u8; TL_PACKET_HEADER_SIZE + 5 + 251]>> =
