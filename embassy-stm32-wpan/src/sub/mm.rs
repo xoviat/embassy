@@ -4,6 +4,7 @@ use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::task::Poll;
 
+use aligned::{Aligned, A4};
 use cortex_m::interrupt;
 use embassy_stm32::ipcc::Ipcc;
 use embassy_sync::waitqueue::AtomicWaker;
@@ -17,7 +18,7 @@ use crate::unsafe_linked_list::LinkedListNode;
 use crate::{channels, evt};
 
 static MM_WAKER: AtomicWaker = AtomicWaker::new();
-static mut LOCAL_FREE_BUF_QUEUE: MaybeUninit<LinkedListNode> = MaybeUninit::uninit();
+static mut LOCAL_FREE_BUF_QUEUE: Aligned<A4, MaybeUninit<LinkedListNode>> = Aligned(MaybeUninit::uninit());
 
 pub struct MemoryManager {
     phantom: PhantomData<MemoryManager>,

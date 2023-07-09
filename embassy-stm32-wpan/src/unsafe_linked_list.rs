@@ -120,7 +120,8 @@ impl LinkedListNode {
             // trace!("remove node: {:x}", p_node);
             // apparently linked list nodes are not always aligned.
             // if more hardfaults occur, more of these may need to be converted to unaligned.
-            let node = ptr::read_unaligned(p_node);
+            // let node = ptr::read_unaligned(p_node);
+            let node = ptr::read_volatile(p_node);
             // trace!("remove node: prev/next {:x}/{:x}", node.prev, node.next);
 
             if node.next != node.prev {
