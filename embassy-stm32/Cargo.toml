@@ -179,7 +179,7 @@ futures-util = { version = "0.3.30", default-features = false }
 sdio-host = "0.9.0"
 critical-section = "1.1"
 #stm32-metapac = { version = "18" }
-stm32-metapac = { git = "https://github.com/embassy-rs/stm32-data-generated", tag = "stm32-data-b9f6b0c542d85ee695d71c35ced195e0cef51ac0" }
+stm32-metapac = { path = "../../stm32-data/build/stm32-metapac" }
 
 vcell = "0.1.3"
 nb = "1.0.0"
@@ -209,7 +209,7 @@ proc-macro2 = "1.0.36"
 quote = "1.0.15"
 
 #stm32-metapac = { version = "18", default-features = false, features = ["metadata"]}
-stm32-metapac = { git = "https://github.com/embassy-rs/stm32-data-generated", tag = "stm32-data-b9f6b0c542d85ee695d71c35ced195e0cef51ac0", default-features = false, features = ["metadata"] }
+stm32-metapac = { path = "../../stm32-data/build/stm32-metapac", default-features = false, features = ["metadata"]}
 
 [features]
 default = ["rt"]
