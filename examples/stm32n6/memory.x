@@ -1,5 +1,8 @@
 MEMORY
 {
-  FLASH    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 255K
-  RAM    (xrw)    : ORIGIN = 0x341C0000,   LENGTH = 256K
+  RAM : ORIGIN = 0x34100000, LENGTH = 1024K
 }
+
+
+REGION_ALIAS("FLASH", RAM);
+_stack_start = ORIGIN(RAM) + LENGTH(RAM);
