@@ -286,6 +286,8 @@ impl RtcDriver {
     }
 
     fn on_interrupt(&self) {
+        trace!("timer: on interrupt");
+
         let r = regs_gp16();
 
         critical_section::with(|cs| {
@@ -471,6 +473,8 @@ impl RtcDriver {
     }
 
     fn set_alarm(&self, cs: CriticalSection, timestamp: u64) -> bool {
+        trace!("timer: set alarm");
+
         let r = regs_gp16();
 
         let n = 0;

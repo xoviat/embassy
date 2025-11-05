@@ -38,13 +38,22 @@ async fn main(_spawner: Spawner) {
         w.set_axisram1lpen(true);
     });
 
+    pac::RCC.apb2lpenr().modify(|w| {
+        w.set_tim9lpen(true);
+    });
+
+    let mut delay = cortex_m::delay::Delay::new(unsafe { core::mem::transmute(()) }, 64_000_000);
+
     loop {
         info!("high");
         led.set_high();
-        Timer::after_millis(500).await;
+        delay.delay_ms(500);
+
+        // Timer::after_millis(500).await;
 
         info!("low");
         led.set_low();
-        Timer::after_millis(500).await;
+        delay.delay_ms(500);
+        // Timer::after_millis(500).await;
     }
 }
