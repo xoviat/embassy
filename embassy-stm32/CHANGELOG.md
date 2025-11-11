@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased - ReleaseDate
 
+- feat: timer: Add 32-bit timer support to SimplePwm waveform_up method following waveform pattern ([#4717](https://github.com/embassy-rs/embassy/pull/4717))
+- feat: Add support for injected ADC measurements for g4 ([#4840](https://github.com/embassy-rs/embassy/pull/4840))
+- feat: Implement into_ring_buffered for g4 ([#4840](https://github.com/embassy-rs/embassy/pull/4840))
+- feat: Add support for 13-bit address and 16-bit data SDRAM chips
 - feat: stm32/hrtim add new_chx_with_config to provide pin configuration
 - fix flash erase on L4 & L5
 - fix: Fixed STM32H5 builds requiring time feature
@@ -37,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: timer: add ability to set master mode
 - fix: sdmmc: don't wait for DBCKEND flag on sdmmc_v2 devices as it never fires (Fixes #4723)
 - fix: usart: fix race condition in ringbuffered usart
+- feat: Add backup_sram::init() for H5 devices to access BKPSRAM
 - feat: Add I2C MultiMaster (Slave) support for I2C v1
 - feat: stm32/fdcan: add ability to control automatic recovery from bus off ([#4821](https://github.com/embassy-rs/embassy/pull/4821))
 - low-power: update rtc api to allow reconfig
@@ -44,10 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: Added RTC low-power support for STM32WLEx ([#4716](https://github.com/embassy-rs/embassy/pull/4716))
 - fix: Correct STM32WBA VREFBUFTRIM values
 - low_power: remove stop_with rtc and initialize in init if low-power feature enabled.
+- feat: stm32/dsi support zero parameter commands in `write_cmd` ([#4847](https://github.com/embassy-rs/embassy/pull/4847))
+- feat: stm32/spi: added support for slave mode ([#4388](https://github.com/embassy-rs/embassy/pull/4388))
+- chore: Updated stm32-metapac and stm32-data dependencies
+- adc: reogranize and cleanup somewhat. require sample_time to be passed on conversion
+- fix: stm32/i2c v2 slave: prevent misaligned reads, error false positives, and incorrect counts of bytes read/written
 
 ## 0.4.0 - 2025-08-26
 
-- feat: stm32/sai: make NODIV independent of MCKDIV 
+- feat: stm32/sai: make NODIV independent of MCKDIV
 - fix: stm32/sai: fix WB MCKDIV
 - fix: stm32/i2c: pull-down was enabled instead of pull-none when no internal pull-up was needed.
 - feat: Improve blocking hash speed
@@ -56,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - chore: Updated stm32-metapac and stm32-data dependencies
 - feat: stm32/adc/v3: allow DMA reads to loop through enable channels
 - fix: Fix XSPI not disabling alternate bytes when they were previously enabled
-- feat: stm32/adc/v3: added support for Continuous DMA configuration 
+- feat: stm32/adc/v3: added support for Continuous DMA configuration
 - fix: Fix stm32h7rs init when using external flash via XSPI
 - feat: Add Adc::new_with_clock() to configure analog clock
 - feat: Add GPDMA linked-list + ringbuffer support ([#3923](https://github.com/embassy-rs/embassy/pull/3923))

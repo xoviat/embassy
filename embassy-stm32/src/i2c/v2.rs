@@ -1196,7 +1196,7 @@ impl<'d> I2c<'d, Async, MultiMaster> {
 
         let regs = self.info.regs;
 
-        let dma_transfer = unsafe {
+        let mut dma_transfer = unsafe {
             regs.cr1().modify(|w| {
                 w.set_rxdmaen(true);
                 w.set_stopie(true);
@@ -1235,6 +1235,7 @@ impl<'d> I2c<'d, Async, MultiMaster> {
                 regs.cr1().modify(|w| w.set_tcie(true));
                 Poll::Pending
             } else if isr.stopf() {
+                remaining_len = remaining_len.saturating_add(dma_transfer.get_remaining_transfers() as usize);
                 regs.icr().write(|reg| reg.set_stopcf(true));
                 let poll = Poll::Ready(Ok(total_len - remaining_len));
                 poll
@@ -1244,6 +1245,7 @@ impl<'d> I2c<'d, Async, MultiMaster> {
         })
         .await?;
 
+        dma_transfer.request_pause();
         dma_transfer.await;
 
         drop(on_drop);
@@ -1273,7 +1275,8 @@ impl<'d> I2c<'d, Async, MultiMaster> {
                 w.set_txdmaen(false);
                 w.set_stopie(false);
                 w.set_tcie(false);
-            })
+            });
+            regs.isr().write(|w| w.set_txe(true));
         });
 
         let state = self.state;
@@ -1296,6 +1299,11 @@ impl<'d> I2c<'d, Async, MultiMaster> {
                 self.info.regs.cr1().modify(|w| w.set_tcie(true));
                 Poll::Pending
             } else if isr.stopf() {
+                let mut leftover_bytes = dma_transfer.get_remaining_transfers();
+                if !self.info.regs.isr().read().txe() {
+                    leftover_bytes = leftover_bytes.saturating_add(1);
+                }
+                remaining_len = remaining_len.saturating_add(leftover_bytes as usize);
                 self.info.regs.icr().write(|reg| reg.set_stopcf(true));
                 if remaining_len > 0 {
                     dma_transfer.request_pause();
@@ -1309,6 +1317,7 @@ impl<'d> I2c<'d, Async, MultiMaster> {
         })
         .await?;
 
+        dma_transfer.request_pause();
         dma_transfer.await;
 
         drop(on_drop);

@@ -114,6 +114,8 @@ fn main() {
         }
     };
 
+    let has_bkpsram = memory.iter().any(|m| m.name == "BKPSRAM");
+
     // ========
     // Generate singletons
 
@@ -122,6 +124,13 @@ fn main() {
     // Generate one singleton per pin
     for p in METADATA.pins {
         singletons.push(p.name.to_string());
+    }
+
+    cfgs.declare("backup_sram");
+
+    if has_bkpsram {
+        singletons.push("BKPSRAM".to_string());
+        cfgs.enable("backup_sram")
     }
 
     // generate one singleton per peripheral (with many exceptions...)
@@ -1997,6 +2006,18 @@ fn main() {
     ));
 
     // ========
+    // Generate backup sram constants
+    if let Some(m) = memory.iter().find(|m| m.name == "BKPSRAM") {
+        let bkpsram_base = m.address as usize;
+        let bkpsram_size = m.size as usize;
+
+        g.extend(quote!(
+            pub const BKPSRAM_BASE: usize = #bkpsram_base;
+            pub const BKPSRAM_SIZE: usize = #bkpsram_size;
+        ));
+    }
+
+    // ========
     // Generate flash constants
 
     if has_flash {
@@ -2322,6 +2343,10 @@ fn mem_filter(chip: &str, region: &str) -> bool {
         && !chip.starts_with("STM32WB0")
         && region.starts_with("SRAM2")
     {
+        return false;
+    }
+
+    if region.starts_with("SDRAM_") || region.starts_with("FMC_") || region.starts_with("OCTOSPI_") {
         return false;
     }
 
