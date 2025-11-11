@@ -7,7 +7,7 @@ use embassy_executor::Spawner;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::{interrupt, pac, Peri};
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::task]
@@ -63,6 +63,10 @@ async fn main(spawner: Spawner) {
     //    pac::TIM9.cr1().modify(|w| w.set_cen(false));
     //    pac::TIM9.cr1().modify(|w| w.set_cen(true));
 
+    unsafe {
+        core::arch::asm!("cpsie i");
+    }
+
     let mut delay = cortex_m::delay::Delay::new(unsafe { core::mem::transmute(()) }, 64_000_000);
     let mut nvic = unsafe { cortex_m::Peripherals::steal() }.NVIC;
 
@@ -109,7 +113,7 @@ async fn main(spawner: Spawner) {
 
         info!("high");
         led.set_high();
-        delay.delay_ms(500);
+        Timer::after(Duration::from_millis(500)).await;
 
         show_status();
 
@@ -123,7 +127,7 @@ async fn main(spawner: Spawner) {
 
         info!("low");
         led.set_low();
-        delay.delay_ms(500);
+        Timer::after(Duration::from_millis(500)).await;
         // Timer::after_millis(500).await;
     }
 }
