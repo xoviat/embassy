@@ -46,17 +46,21 @@ async fn main(_spawner: Spawner) {
 
     let config = Config::default();
     let mbox = TlMbox::init(p.IPCC, Irqs, config);
+    let mut sys = mbox.sys_subsystem;
+    let mut ble = mbox.ble_subsystem;
 
-    let sys_event = mbox.sys_subsystem.read().await;
-    info!("sys event: {}", sys_event.payload());
+    {
+        let sys_event = sys.read().await;
+        info!("sys event: {}", sys_event.payload());
+    }
 
-    let _ = mbox.sys_subsystem.shci_c2_ble_init(Default::default()).await;
+    let _ = sys.shci_c2_ble_init(Default::default()).await;
 
     info!("starting ble...");
-    mbox.ble_subsystem.tl_write(0x0c, &[]).await;
+    ble.tl_write(0x0c, &[]).await;
 
     info!("waiting for ble...");
-    let ble_event = mbox.ble_subsystem.tl_read().await;
+    let ble_event = ble.tl_read().await;
 
     info!("ble event: {}", ble_event.payload());
 

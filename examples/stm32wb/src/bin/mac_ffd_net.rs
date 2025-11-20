@@ -27,7 +27,7 @@ bind_interrupts!(struct Irqs{
 });
 
 #[embassy_executor::task]
-async fn run_mm_queue(memory_manager: mm::MemoryManager) -> ! {
+async fn run_mm_queue(mut memory_manager: mm::MemoryManager<'static>) -> ! {
     memory_manager.run_queue().await
 }
 
@@ -72,7 +72,7 @@ async fn main(spawner: Spawner) {
     info!("Hello World!");
 
     let config = Config::default();
-    let mbox = TlMbox::init(p.IPCC, Irqs, config);
+    let mut mbox = TlMbox::init(p.IPCC, Irqs, config);
 
     spawner.spawn(run_mm_queue(mbox.mm_subsystem).unwrap());
 

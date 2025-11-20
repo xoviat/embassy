@@ -53,14 +53,12 @@ type PacketHeader = LinkedListNode;
 
 /// Transport Layer for the Mailbox interface
 pub struct TlMbox<'d> {
-    _ipcc: Peri<'d, IPCC>,
-
-    pub sys_subsystem: Sys,
-    pub mm_subsystem: MemoryManager,
+    pub sys_subsystem: Sys<'d>,
+    pub mm_subsystem: MemoryManager<'d>,
     #[cfg(feature = "ble")]
-    pub ble_subsystem: sub::ble::Ble,
+    pub ble_subsystem: sub::ble::Ble<'d>,
     #[cfg(feature = "mac")]
-    pub mac_subsystem: sub::mac::Mac,
+    pub mac_subsystem: sub::mac::Mac<'d>,
 }
 
 impl<'d> TlMbox<'d> {
@@ -185,16 +183,29 @@ impl<'d> TlMbox<'d> {
         compiler_fence(Ordering::SeqCst);
 
         // this is equivalent to `HW_IPCC_Enable`, which is called by `TL_Enable`
-        Ipcc::enable(config);
+        let [
+            (_hw_ipcc_ble_cmd_channel, _ipcc_ble_event_channel),
+            (ipcc_system_cmd_rsp_channel, ipcc_system_event_channel),
+            (_ipcc_mac_802_15_4_cmd_rsp_channel, _ipcc_mac_802_15_4_notification_ack_channel),
+            (ipcc_mm_release_buffer_channel, _ipcc_traces_channel),
+            (_ipcc_ble_lld_cmd_channel, _ipcc_ble_lld_rsp_channel),
+            (_ipcc_hci_acl_data_channel, _),
+        ] = Ipcc::new(ipcc, _irqs, config).split();
 
         Self {
-            _ipcc: ipcc,
-            sys_subsystem: sub::sys::Sys::new(),
+            sys_subsystem: sub::sys::Sys::new(ipcc_system_cmd_rsp_channel, ipcc_system_event_channel),
             #[cfg(feature = "ble")]
-            ble_subsystem: sub::ble::Ble::new(),
+            ble_subsystem: sub::ble::Ble::new(
+                _hw_ipcc_ble_cmd_channel,
+                _ipcc_ble_event_channel,
+                _ipcc_hci_acl_data_channel,
+            ),
             #[cfg(feature = "mac")]
-            mac_subsystem: sub::mac::Mac::new(),
-            mm_subsystem: sub::mm::MemoryManager::new(),
+            mac_subsystem: sub::mac::Mac::new(
+                _ipcc_mac_802_15_4_cmd_rsp_channel,
+                _ipcc_mac_802_15_4_notification_ack_channel,
+            ),
+            mm_subsystem: sub::mm::MemoryManager::new(ipcc_mm_release_buffer_channel),
         }
     }
 }
