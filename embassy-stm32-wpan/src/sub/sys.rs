@@ -75,25 +75,6 @@ impl<'a> Sys<'a> {
 
     #[cfg(feature = "mac")]
     pub async fn shci_c2_mac_802_15_4_init(&mut self) -> Result<SchiCommandStatus, ()> {
-        use crate::tables::{
-            MAC_802_15_4_CMD_BUFFER, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER, Mac802_15_4Table, TL_MAC_802_15_4_TABLE,
-            TL_TRACES_TABLE, TRACES_EVT_QUEUE, TracesTable,
-        };
-
-        unsafe {
-            LinkedListNode::init_head(TRACES_EVT_QUEUE.as_mut_ptr() as *mut _);
-
-            TL_TRACES_TABLE.as_mut_ptr().write_volatile(TracesTable {
-                traces_queue: TRACES_EVT_QUEUE.as_ptr() as *const _,
-            });
-
-            TL_MAC_802_15_4_TABLE.as_mut_ptr().write_volatile(Mac802_15_4Table {
-                p_cmdrsp_buffer: MAC_802_15_4_CMD_BUFFER.as_mut_ptr().cast(),
-                p_notack_buffer: MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr().cast(),
-                evt_queue: core::ptr::null_mut(),
-            });
-        };
-
         self.write_and_get_response(ShciOpcode::Mac802_15_4Init, &[]).await
     }
 
@@ -113,7 +94,7 @@ impl<'a> Sys<'a> {
     /// This method takes the place of the `HW_IPCC_SYS_EvtNot`/`SysUserEvtRx`/`APPE_SysUserEvtRx`,
     /// as the embassy implementation avoids the need to call C public bindings, and instead
     /// handles the event channels directly.
-    pub async fn read(&mut self) -> EvtBox<mm::MemoryManager> {
+    pub async fn read<'b>(&mut self) -> EvtBox<mm::MemoryManager<'b>> {
         self.ipcc_system_event_channel
             .receive(|| unsafe {
                 if let Some(node_ptr) = LinkedListNode::remove_head(SYSTEM_EVT_QUEUE.as_mut_ptr()) {

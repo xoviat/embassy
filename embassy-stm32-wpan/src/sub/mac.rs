@@ -9,12 +9,13 @@ use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::cmd::CmdPacket;
 use crate::consts::TlPacketType;
+use crate::evt;
 use crate::evt::{EvtBox, EvtPacket};
 use crate::mac::commands::MacCommand;
 use crate::mac::event::MacEvent;
 use crate::mac::typedefs::MacError;
 use crate::tables::{MAC_802_15_4_CMD_BUFFER, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER};
-use crate::{channels, evt};
+use crate::unsafe_linked_list::LinkedListNode;
 
 static MAC_WAKER: AtomicWaker = AtomicWaker::new();
 static MAC_EVT_OUT: AtomicBool = AtomicBool::new(false);
@@ -25,10 +26,29 @@ pub struct Mac<'a> {
 }
 
 impl<'a> Mac<'a> {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         ipcc_mac_802_15_4_cmd_rsp_channel: IpccTxChannel<'a>,
         ipcc_mac_802_15_4_notification_ack_channel: IpccRxChannel<'a>,
     ) -> Self {
+        use crate::tables::{
+            MAC_802_15_4_CMD_BUFFER, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER, Mac802_15_4Table, TL_MAC_802_15_4_TABLE,
+            TL_TRACES_TABLE, TRACES_EVT_QUEUE, TracesTable,
+        };
+
+        unsafe {
+            LinkedListNode::init_head(TRACES_EVT_QUEUE.as_mut_ptr() as *mut _);
+
+            TL_TRACES_TABLE.as_mut_ptr().write_volatile(TracesTable {
+                traces_queue: TRACES_EVT_QUEUE.as_ptr() as *const _,
+            });
+
+            TL_MAC_802_15_4_TABLE.as_mut_ptr().write_volatile(Mac802_15_4Table {
+                p_cmdrsp_buffer: MAC_802_15_4_CMD_BUFFER.as_mut_ptr().cast(),
+                p_notack_buffer: MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr().cast(),
+                evt_queue: core::ptr::null_mut(),
+            });
+        };
+
         Self {
             ipcc_mac_802_15_4_cmd_rsp_channel,
             ipcc_mac_802_15_4_notification_ack_channel,
@@ -101,11 +121,11 @@ impl<'a> MacRx<'a> {
     /// `HW_IPCC_MAC_802_15_4_EvtNot`
     ///
     /// This function will stall if the previous `EvtBox` has not been dropped
-    pub async fn tl_read(&mut self) -> EvtBox<Mac> {
+    pub async fn tl_read(&mut self) -> EvtBox<MacRx<'a>> {
         // Wait for the last event box to be dropped
         poll_fn(|cx| {
             MAC_WAKER.register(cx.waker());
-            if MAC_EVT_OUT.load(Ordering::SeqCst) {
+            if MAC_EVT_OUT.load(Ordering::Acquire) {
                 Poll::Pending
             } else {
                 Poll::Ready(())
@@ -130,7 +150,7 @@ impl<'a> MacRx<'a> {
     }
 }
 
-impl<'a> evt::MemoryManager for Mac<'a> {
+impl<'a> evt::MemoryManager for MacRx<'a> {
     /// SAFETY: passing a pointer to something other than a managed event packet is UB
     unsafe fn drop_event_packet(_: *mut EvtPacket) {
         trace!("mac drop event");
@@ -147,7 +167,7 @@ impl<'a> evt::MemoryManager for Mac<'a> {
         let _ = poll_once(Ipcc::receive::<()>(3, || None));
 
         // Allow a new read call
-        MAC_EVT_OUT.store(false, Ordering::SeqCst);
+        MAC_EVT_OUT.store(false, Ordering::Release);
         MAC_WAKER.wake();
     }
 }

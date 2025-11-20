@@ -1,6 +1,6 @@
 use core::ptr;
 
-use embassy_stm32::ipcc::{Ipcc, IpccRxChannel, IpccTxChannel};
+use embassy_stm32::ipcc::{IpccRxChannel, IpccTxChannel};
 use hci::Opcode;
 
 use crate::cmd::CmdPacket;
@@ -9,7 +9,7 @@ use crate::evt::{EvtBox, EvtPacket, EvtStub};
 use crate::sub::mm;
 use crate::tables::{BLE_CMD_BUFFER, BleTable, CS_BUFFER, EVT_QUEUE, HCI_ACL_DATA_BUFFER, TL_BLE_TABLE};
 use crate::unsafe_linked_list::LinkedListNode;
-use crate::{channels, evt};
+use crate::evt;
 
 /// A guard that, once constructed, may be used to send BLE commands to CPU2.
 ///

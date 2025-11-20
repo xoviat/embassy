@@ -4,7 +4,7 @@
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::bind_interrupts;
-use embassy_stm32::ipcc::{Config, ReceiveInterruptHandler, TransmitInterruptHandler};
+use embassy_stm32::ipcc::{Config, IpccRxChannel, ReceiveInterruptHandler, TransmitInterruptHandler};
 use embassy_stm32::rcc::WPAN_DEFAULT;
 use embassy_stm32_wpan::TlMbox;
 use {defmt_rtt as _, panic_probe as _};
@@ -13,6 +13,19 @@ bind_interrupts!(struct Irqs{
     IPCC_C1_RX => ReceiveInterruptHandler;
     IPCC_C1_TX => TransmitInterruptHandler;
 });
+
+#[embassy_executor::task]
+async fn run_traces(mut traces: IpccRxChannel<'static>) {
+    loop {
+        traces
+            .receive(|| {
+                info!("got traces!");
+
+                Some(())
+            })
+            .await;
+    }
+}
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -45,14 +58,12 @@ async fn main(_spawner: Spawner) {
     info!("Hello World!");
 
     let config = Config::default();
-    let mbox = TlMbox::init(p.IPCC, Irqs, config);
+    let mbox = TlMbox::init(p.IPCC, Irqs, config).await;
     let mut sys = mbox.sys_subsystem;
     let mut ble = mbox.ble_subsystem;
+    let traces = mbox.traces;
 
-    {
-        let sys_event = sys.read().await;
-        info!("sys event: {}", sys_event.payload());
-    }
+    _spawner.spawn(run_traces(traces).unwrap());
 
     let _ = sys.shci_c2_ble_init(Default::default()).await;
 
