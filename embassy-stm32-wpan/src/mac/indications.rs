@@ -1,7 +1,7 @@
 use core::slice;
 
-use smoltcp::wire::Ieee802154FrameType;
 use smoltcp::wire::ieee802154::Frame;
+use smoltcp::wire::{Ieee802154FrameType, Ieee802154FrameVersion, Ieee802154Repr};
 
 use super::consts::MAX_PENDING_ADDRESS;
 use super::event::ParseableMacEvent;
@@ -87,11 +87,28 @@ impl BeaconNotifyIndication {
 pub fn write_frame_from_beacon_indication<'a, T: AsRef<[u8]> + AsMut<[u8]>>(
     data: &'a BeaconNotifyIndication,
     buffer: &'a mut T,
-) {
+) -> usize {
     let mut frame = Frame::new_unchecked(buffer);
 
-    frame.set_frame_type(Ieee802154FrameType::Beacon);
-    frame.set_sequence_number(data.bsn);
+    let ieee_repr = Ieee802154Repr {
+        frame_type: Ieee802154FrameType::Beacon,
+        security_enabled: false,
+        frame_pending: false,
+        ack_request: false,
+        sequence_number: Some(data.bsn),
+        pan_id_compression: false,
+        frame_version: Ieee802154FrameVersion::Ieee802154,
+        dst_pan_id: None,
+        dst_addr: None,
+        src_pan_id: None,
+        src_addr: None,
+    };
+
+    ieee_repr.emit(&mut frame);
+
+    frame.payload_mut().unwrap().copy_from_slice(data.payload());
+
+    ieee_repr.buffer_len() + data.payload().len()
 }
 
 /// MLME COMM STATUS Indication which is used by the MAC to indicate a communications status
@@ -270,19 +287,32 @@ impl DataIndication {
     }
 }
 
-pub fn write_frame_from_data_indication<'a, T: AsRef<[u8]> + AsMut<[u8]>>(data: &'a DataIndication, buffer: &'a mut T) {
+pub fn write_frame_from_data_indication<'a, T: AsRef<[u8]> + AsMut<[u8]>>(
+    data: &'a DataIndication,
+    buffer: &'a mut T,
+) -> usize {
     let mut frame = Frame::new_unchecked(buffer);
 
-    frame.set_frame_type(Ieee802154FrameType::Data);
-    frame.set_src_addr(MacAddressAndMode(data.src_address, data.src_addr_mode).into());
-    frame.set_dst_addr(MacAddressAndMode(data.dst_address, data.dst_addr_mode).into());
-    frame.set_dst_pan_id(data.dst_pan_id.into());
-    frame.set_src_pan_id(data.src_pan_id.into());
-    frame.set_sequence_number(data.dsn);
-    frame.set_security_enabled(data.security_level == SecurityLevel::Secured);
+    let ieee_repr = Ieee802154Repr {
+        frame_type: Ieee802154FrameType::Data,
+        security_enabled: data.security_level == SecurityLevel::Secured,
+        frame_pending: false,
+        ack_request: false,
+        sequence_number: Some(data.dsn),
+        pan_id_compression: false,
+        frame_version: Ieee802154FrameVersion::Ieee802154,
+        dst_pan_id: Some(data.dst_pan_id.into()),
+        dst_addr: Some(MacAddressAndMode(data.dst_address, data.dst_addr_mode).into()),
+        src_pan_id: Some(data.src_pan_id.into()),
+        src_addr: Some(MacAddressAndMode(data.src_address, data.src_addr_mode).into()),
+    };
+
+    ieee_repr.emit(&mut frame);
 
     // No way around the copy with the current API
     frame.payload_mut().unwrap().copy_from_slice(data.payload());
+
+    ieee_repr.buffer_len() + data.payload().len()
 }
 
 /// MLME POLL Indication which will be used for indicating the Data Request

@@ -181,13 +181,13 @@ impl<'d> embassy_net_driver::RxToken for RxToken<'d> {
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut buffer = [0u8; MTU];
-        match self.rx.try_receive().unwrap() {
+        let len = match self.rx.try_receive().unwrap() {
             MacEvent::McpsDataInd(data_event) => write_frame_from_data_indication(data_event, &mut buffer),
             MacEvent::MlmeBeaconNotifyInd(data_event) => write_frame_from_beacon_indication(data_event, &mut buffer),
-            _ => {}
+            _ => 0,
         };
 
-        f(&mut buffer[..])
+        f(&mut buffer[..len])
     }
 }
 
