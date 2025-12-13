@@ -286,6 +286,16 @@ impl Executor {
 
         #[cfg(any(stm32l4, stm32l5, stm32u5, stm32u0, stm32wb, stm32wba, stm32wlex))]
         crate::pac::PWR.cr1().modify(|m| m.set_lpms(stop_mode.into()));
+
+        #[cfg(stm32wb)]
+        crate::pac::PWR.c2cr1().modify(|m| {
+            m.set_lpms({
+                let stop_mode: Lpms = stop_mode.into();
+
+                stop_mode as u8
+            })
+        });
+
         #[cfg(stm32h5)]
         crate::pac::PWR.pmcr().modify(|v| {
             use crate::pac::pwr::vals;
