@@ -253,7 +253,7 @@ cyw43 = ["dep:cyw43"]
 stm32-hrtim = ["dep:stm32-hrtim"]
 
 exti = []
-low-power = [ "time", "chrono" ]
+low-power = [ "time" ]
 low-power-debug-with-sleep = [ "low-power" ]
 low-power-defmt-flush = [ "defmt" ]
 

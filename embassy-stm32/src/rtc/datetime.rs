@@ -48,6 +48,48 @@ pub struct DateTime {
 }
 
 impl DateTime {
+    #[cfg(all(feature = "low-power", not(feature = "_lp-time-driver")))]
+    pub(crate) const fn micros_from_unix_epoch(&self) -> i128 {
+        const fn is_leap_year(year: i32) -> bool {
+            (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+        }
+
+        const fn days_in_month(month: u8, year: i32) -> i32 {
+            match month {
+                1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+                4 | 6 | 9 | 11 => 30,
+                2 => {
+                    if is_leap_year(year) {
+                        29
+                    } else {
+                        28
+                    }
+                }
+                _ => core::panic!("invalid month"),
+            }
+        }
+
+        const fn days_since(year: i32) -> i32 {
+            year * 365 + year / 4 - year / 100 + year / 400
+        }
+
+        let mut days: i32 = days_since(self.year as i32) - days_since(1970i32);
+        let mut m = 1u8;
+        while m < self.month {
+            days += days_in_month(m, self.year as i32);
+            m += 1;
+        }
+
+        days += (self.day as i32) - 1;
+
+        let hour = self.hour;
+        let minute = self.minute;
+        let second = self.second;
+        let seconds = days as i64 * 86_400 + ((hour as i32) * 3_600 + (minute as i32) * 60 + (second as i32)) as i64;
+
+        seconds as i128 * 1_000_000i128 + self.usecond as i128
+    }
+
     /// Get the year (0..=4095)
     pub const fn year(&self) -> u16 {
         self.year
