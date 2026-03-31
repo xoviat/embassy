@@ -1,5 +1,6 @@
 //! Coordinate Rotation Digital Computer (CORDIC)
 
+use core::convert::Infallible;
 use core::{mem, slice};
 
 use aligned::{A4, Aligned};
@@ -20,7 +21,8 @@ pub use errors::*;
 /// CORDIC driver
 pub struct Cordic<'d, T: Instance> {
     peri: Peri<'d, T>,
-    config: Config,
+    arg_count: AccessCount,
+    res_count: AccessCount,
 }
 
 /// Cordic instance
@@ -137,7 +139,7 @@ impl Config {
 
 impl<'d, T: Instance> SetConfig for Cordic<'d, T> {
     type Config = Config;
-    type ConfigError = ();
+    type ConfigError = Infallible;
 
     /// Set a new config for Cordic driver.
     ///
@@ -145,26 +147,6 @@ impl<'d, T: Instance> SetConfig for Cordic<'d, T> {
     /// To change only `arg_count`/`res_count` without resetting ARG2,
     /// use [`Self::set_access_counts`] instead.
     fn set_config(&mut self, config: &Self::Config) -> Result<(), Self::ConfigError> {
-        self.config = config.clone();
-        self.reconfigure();
-
-        Ok(())
-    }
-}
-
-// common method
-impl<'d, T: Instance> Cordic<'d, T> {
-    /// Create a Cordic driver instance
-    pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
-        rcc::enable_and_reset::<T>();
-
-        let mut instance = Self { peri, config: config };
-
-        instance.reconfigure();
-        instance
-    }
-
-    fn reconfigure(&mut self) {
         // Disable IRQ and DMA first
         T::regs().csr().modify(|v| {
             v.set_ien(false);
@@ -173,7 +155,7 @@ impl<'d, T: Instance> Cordic<'d, T> {
         });
         self.clean_rrdy_flag();
 
-        // Reset ARG2 to +1: self.configure for 2-arg Cos with minimal precision, feed dummy args.
+        // Reset ARG2 to +1: configure for 2-arg Cos with minimal precision, feed dummy args.
         T::regs().csr().modify(|v| {
             v.set_func(vals::Func::from_bits(Function::Cos as u8));
             v.set_precision(vals::Precision::from_bits(Precision::Iters4 as u8));
@@ -186,16 +168,16 @@ impl<'d, T: Instance> Cordic<'d, T> {
         self.peri.write_argument(0x7FFFFFFFu32);
         self.clean_rrdy_flag();
 
-        // Apply full user self.configuration (func, precision, scale, data interface).
+        // Apply full user configuration (func, precision, scale, data interface).
         T::regs().csr().modify(|v| {
-            v.set_func(vals::Func::from_bits(self.config.function as u8));
-            v.set_precision(vals::Precision::from_bits(self.config.precision as u8));
-            v.set_scale(vals::Scale::from_bits(self.config.scale as u8));
-            v.set_nargs(match self.config.arg_count {
+            v.set_func(vals::Func::from_bits(config.function as u8));
+            v.set_precision(vals::Precision::from_bits(config.precision as u8));
+            v.set_scale(vals::Scale::from_bits(config.scale as u8));
+            v.set_nargs(match config.arg_count {
                 AccessCount::One => vals::Num::NUM1,
                 AccessCount::Two => vals::Num::NUM2,
             });
-            v.set_nres(match self.config.res_count {
+            v.set_nres(match config.res_count {
                 AccessCount::One => vals::Num::NUM1,
                 AccessCount::Two => vals::Num::NUM2,
             });
@@ -206,11 +188,33 @@ impl<'d, T: Instance> Cordic<'d, T> {
         // Changing NRES or other CSR fields above can re-assert RRDY if secondary
         // results from the dummy calc were not fully drained. Clean it again.
         self.clean_rrdy_flag();
+
+        self.arg_count = config.arg_count;
+        self.res_count = config.res_count;
+
+        Ok(())
+    }
+}
+
+// common method
+impl<'d, T: Instance> Cordic<'d, T> {
+    /// Create a Cordic driver instance
+    pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
+        rcc::enable_and_reset::<T>();
+
+        let mut instance = Self {
+            peri,
+            arg_count: config.arg_count,
+            res_count: config.res_count,
+        };
+        instance.set_config(&config).unwrap();
+
+        instance
     }
 
     fn set_access_counts(&mut self, arg_count: AccessCount, res_count: AccessCount) {
-        self.config.arg_count = arg_count;
-        self.config.res_count = res_count;
+        self.arg_count = arg_count;
+        self.res_count = res_count;
         T::regs().csr().modify(|v| {
             v.set_nargs(match arg_count {
                 AccessCount::One => vals::Num::NUM1,
@@ -227,11 +231,11 @@ impl<'d, T: Instance> Cordic<'d, T> {
     pub fn q1_31<'a>(&'a mut self) -> Cordic32<'d, 'a, T> {
         // Restore CSR to 32-bit state matching current `Config`
         T::regs().csr().modify(|v| {
-            v.set_nargs(match self.config.arg_count {
+            v.set_nargs(match self.arg_count {
                 AccessCount::One => vals::Num::NUM1,
                 AccessCount::Two => vals::Num::NUM2,
             });
-            v.set_nres(match self.config.res_count {
+            v.set_nres(match self.res_count {
                 AccessCount::One => vals::Num::NUM1,
                 AccessCount::Two => vals::Num::NUM2,
             });
@@ -295,8 +299,8 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
             return Ok(0);
         }
 
-        let arg1_only = matches!(self.inner.config.arg_count, AccessCount::One);
-        let res1_only = matches!(self.inner.config.res_count, AccessCount::One);
+        let arg1_only = matches!(self.inner.arg_count, AccessCount::One);
+        let res1_only = matches!(self.inner.res_count, AccessCount::One);
 
         let res_cnt = Self::check_arg_res_length(arg.len(), res.len(), arg1_only, res1_only)?;
 
@@ -403,8 +407,8 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
             return Ok(0);
         }
 
-        let arg1_only = matches!(self.inner.config.arg_count, AccessCount::One);
-        let res1_only = matches!(self.inner.config.res_count, AccessCount::One);
+        let arg1_only = matches!(self.inner.arg_count, AccessCount::One);
+        let res1_only = matches!(self.inner.res_count, AccessCount::One);
 
         let res_cnt = Self::check_arg_res_length(arg.len(), res.len(), arg1_only, res1_only)?;
 
