@@ -1,5 +1,8 @@
 //! Coordinate Rotation Digital Computer (CORDIC)
 
+use core::mem;
+
+use dsp_fixedpoint::Q32;
 use embassy_embedded_hal::SetConfig;
 use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
@@ -12,8 +15,6 @@ pub use enums::*;
 
 mod errors;
 pub use errors::*;
-
-pub mod utils;
 
 /// CORDIC driver
 pub struct Cordic<'d, T: Instance> {
@@ -36,9 +37,19 @@ trait SealedInstance {
         Self::regs().wdata().write_value(arg)
     }
 
+    /// Write value to WDATA
+    fn write_q32(&self, arg: Q32<31>) {
+        self.write_argument(arg.inner as u32);
+    }
+
     /// Read value from RDATA
     fn read_result(&self) -> u32 {
         Self::regs().rdata().read()
+    }
+
+    /// Read value from RDATA
+    fn read_q32(&self) -> Q32<31> {
+        Q32::new(self.read_result() as i32)
     }
 }
 
@@ -47,7 +58,7 @@ trait SealedInstance {
 pub trait Instance: SealedInstance + PeripheralType + crate::rcc::RccPeripheral {}
 
 /// CORDIC configuration
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Config {
     function: Function,
     precision: Precision,
@@ -133,6 +144,26 @@ impl<'d, T: Instance> SetConfig for Cordic<'d, T> {
     /// To change only `arg_count`/`res_count` without resetting ARG2,
     /// use [`Self::set_access_counts`] instead.
     fn set_config(&mut self, config: &Self::Config) -> Result<(), Self::ConfigError> {
+        self.config = config.clone();
+        self.reconfigure();
+
+        Ok(())
+    }
+}
+
+// common method
+impl<'d, T: Instance> Cordic<'d, T> {
+    /// Create a Cordic driver instance
+    pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
+        rcc::enable_and_reset::<T>();
+
+        let mut instance = Self { peri, config: config };
+
+        instance.reconfigure();
+        instance
+    }
+
+    fn reconfigure(&mut self) {
         // Disable IRQ and DMA first
         T::regs().csr().modify(|v| {
             v.set_ien(false);
@@ -141,7 +172,7 @@ impl<'d, T: Instance> SetConfig for Cordic<'d, T> {
         });
         self.clean_rrdy_flag();
 
-        // Reset ARG2 to +1: configure for 2-arg Cos with minimal precision, feed dummy args.
+        // Reset ARG2 to +1: self.configure for 2-arg Cos with minimal precision, feed dummy args.
         T::regs().csr().modify(|v| {
             v.set_func(vals::Func::from_bits(Function::Cos as u8));
             v.set_precision(vals::Precision::from_bits(Precision::Iters4 as u8));
@@ -154,16 +185,16 @@ impl<'d, T: Instance> SetConfig for Cordic<'d, T> {
         self.peri.write_argument(0x7FFFFFFFu32);
         self.clean_rrdy_flag();
 
-        // Apply full user configuration (func, precision, scale, data interface).
+        // Apply full user self.configuration (func, precision, scale, data interface).
         T::regs().csr().modify(|v| {
-            v.set_func(vals::Func::from_bits(config.function as u8));
-            v.set_precision(vals::Precision::from_bits(config.precision as u8));
-            v.set_scale(vals::Scale::from_bits(config.scale as u8));
-            v.set_nargs(match config.arg_count {
+            v.set_func(vals::Func::from_bits(self.config.function as u8));
+            v.set_precision(vals::Precision::from_bits(self.config.precision as u8));
+            v.set_scale(vals::Scale::from_bits(self.config.scale as u8));
+            v.set_nargs(match self.config.arg_count {
                 AccessCount::One => vals::Num::NUM1,
                 AccessCount::Two => vals::Num::NUM2,
             });
-            v.set_nres(match config.res_count {
+            v.set_nres(match self.config.res_count {
                 AccessCount::One => vals::Num::NUM1,
                 AccessCount::Two => vals::Num::NUM2,
             });
@@ -174,23 +205,6 @@ impl<'d, T: Instance> SetConfig for Cordic<'d, T> {
         // Changing NRES or other CSR fields above can re-assert RRDY if secondary
         // results from the dummy calc were not fully drained. Clean it again.
         self.clean_rrdy_flag();
-
-        self.config = *config;
-
-        Ok(())
-    }
-}
-
-// common method
-impl<'d, T: Instance> Cordic<'d, T> {
-    /// Create a Cordic driver instance
-    pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
-        rcc::enable_and_reset::<T>();
-
-        let mut instance = Self { peri, config };
-
-        instance.set_config(&config).unwrap();
-        instance
     }
 
     fn set_access_counts(&mut self, arg_count: AccessCount, res_count: AccessCount) {
@@ -275,7 +289,7 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
     /// If `arg_count` is `One`, ARG2 must have been set to the desired value
     /// beforehand (e.g. via a prior `Two`-arg call or [`Self::reconfigure`]).
     #[inline]
-    pub fn blocking_calc(&mut self, arg: &[u32], res: &mut [u32]) -> Result<usize, CordicError> {
+    pub fn blocking_calc(&mut self, arg: &[Q32<31>], res: &mut [Q32<31>]) -> Result<usize, CordicError> {
         if arg.is_empty() {
             return Ok(0);
         }
@@ -295,26 +309,26 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
                 let first_value = arg[0];
 
                 // preload 1st value to CORDIC, to start the CORDIC calc
-                peri.write_argument(first_value);
+                peri.write_argument(first_value.inner as u32);
 
                 for &arg1 in &arg[1..] {
                     // preload arg1 (for next calc)
-                    peri.write_argument(arg1);
+                    peri.write_argument(arg1.inner as u32);
 
                     // then read current result out
-                    res[cnt] = peri.read_result();
+                    res[cnt] = peri.read_q32();
                     cnt += 1;
                     if !res1_only {
-                        res[cnt] = peri.read_result();
+                        res[cnt] = peri.read_q32();
                         cnt += 1;
                     }
                 }
 
                 // read the last result
-                res[cnt] = peri.read_result();
+                res[cnt] = peri.read_q32();
                 cnt += 1;
                 if !res1_only {
-                    res[cnt] = peri.read_result();
+                    res[cnt] = peri.read_q32();
                     // cnt += 1;
                 }
             }
@@ -327,33 +341,33 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
                 let paired_args = &arg[1..arg.len() - 1];
 
                 // preload 1st value to CORDIC
-                peri.write_argument(first_value);
+                peri.write_q32(first_value);
 
                 for args in paired_args.chunks(2) {
                     let arg2 = args[0];
                     let arg1 = args[1];
 
                     // load arg2 (for current calc) first, to start the CORDIC calc
-                    peri.write_argument(arg2);
+                    peri.write_q32(arg2);
 
                     // preload arg1 (for next calc)
-                    peri.write_argument(arg1);
+                    peri.write_q32(arg1);
 
                     // then read current result out
-                    res[cnt] = peri.read_result();
+                    res[cnt] = peri.read_q32();
                     cnt += 1;
                     if !res1_only {
-                        res[cnt] = peri.read_result();
+                        res[cnt] = peri.read_q32();
                         cnt += 1;
                     }
                 }
 
                 // load last value to CORDIC, and finish the calculation
-                peri.write_argument(last_value);
-                res[cnt] = peri.read_result();
+                peri.write_q32(last_value);
+                res[cnt] = peri.read_q32();
                 cnt += 1;
                 if !res1_only {
-                    res[cnt] = peri.read_result();
+                    res[cnt] = peri.read_q32();
                     // cnt += 1;
                 }
             }
@@ -377,8 +391,8 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
         irq: impl crate::interrupt::typelevel::Binding<W::Interrupt, crate::dma::InterruptHandler<W>>
         + crate::interrupt::typelevel::Binding<R::Interrupt, crate::dma::InterruptHandler<R>>
         + 'b,
-        arg: &[u32],
-        res: &mut [u32],
+        arg: &[Q32<31>],
+        res: &mut [Q32<31>],
     ) -> Result<usize, CordicError>
     where
         W: WriteDma<T>,
@@ -411,14 +425,18 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
 
         unsafe {
             let mut write_channel = dma::Channel::new(write_dma.reborrow(), irq);
-            let write_transfer =
-                write_channel.write(write_req, arg, T::regs().wdata().as_ptr() as *mut _, Default::default());
+            let write_transfer = write_channel.write(
+                write_req,
+                mem::transmute::<_, &[u32]>(arg),
+                T::regs().wdata().as_ptr() as *mut _,
+                Default::default(),
+            );
 
             let mut read_channel = dma::Channel::new(read_dma.reborrow(), irq);
             let read_transfer = read_channel.read(
                 read_req,
                 T::regs().rdata().as_ptr() as *mut _,
-                active_res_buf,
+                mem::transmute(active_res_buf),
                 Default::default(),
             );
 

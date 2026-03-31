@@ -9,8 +9,8 @@
 mod common;
 use common::*;
 use defmt_rtt as _;
+use dsp_fixedpoint::Q32;
 use embassy_executor::Spawner;
-use embassy_stm32::cordic::utils;
 use embassy_stm32::{cordic, rng};
 use num_traits::Float;
 use panic_probe as _;
@@ -46,16 +46,17 @@ async fn main(_spawner: Spawner) {
     defmt::unwrap!(rng.async_fill_bytes(&mut input_buf_u8).await);
 
     // convert every [u8; 4] to a u32, for a Q1.31 value
-    let mut input_q1_31 = unsafe { core::mem::transmute::<[u8; INPUT_U8_COUNT], [u32; INPUT_U32_COUNT]>(input_buf_u8) };
+    let mut input_q1_31 =
+        unsafe { core::mem::transmute::<[u8; INPUT_U8_COUNT], [Q32<31>; INPUT_U32_COUNT]>(input_buf_u8) };
 
     // ARG2 for Sin function should be inside [0, 1], set MSB to 0 of a Q1.31 value, will make sure it's no less than 0.
-    input_q1_31[1] &= !(1u32 << 31);
+    input_q1_31[1] &= Q32::new(!(1u32 << 31) as i32);
 
     //
     // CORDIC calculation
     //
 
-    let mut output_q1_31 = [0u32; OUTPUT_LENGTH];
+    let mut output_q1_31 = [Q32::<31>::new(0); OUTPUT_LENGTH];
 
     // setup Cordic driver with 2-arg, 2-result config for the initial call
     let mut cordic = cordic::Cordic::new(
@@ -107,7 +108,7 @@ async fn main(_spawner: Spawner) {
     let mut cordic_result_f64 = [0.0f64; OUTPUT_LENGTH];
 
     for (f64_val, u32_val) in cordic_result_f64.iter_mut().zip(output_q1_31) {
-        *f64_val = utils::q1_31_to_f64(u32_val);
+        *f64_val = u32_val.as_f64();
     }
 
     //
@@ -116,7 +117,7 @@ async fn main(_spawner: Spawner) {
 
     let mut software_result_f64 = [0.0f64; OUTPUT_LENGTH];
 
-    let arg2 = utils::q1_31_to_f64(input_q1_31[1]);
+    let arg2 = input_q1_31[1].as_f64();
 
     for (&arg1, res) in input_q1_31
         .iter()
@@ -124,7 +125,7 @@ async fn main(_spawner: Spawner) {
         .filter_map(|(idx, val)| if idx != 1 { Some(val) } else { None })
         .zip(software_result_f64.chunks_mut(2))
     {
-        let arg1 = utils::q1_31_to_f64(arg1);
+        let arg1 = arg1.as_f64();
 
         let (raw_res1, raw_res2) = (arg1 * core::f64::consts::PI).sin_cos();
         (res[0], res[1]) = (raw_res1 * arg2, raw_res2 * arg2);
