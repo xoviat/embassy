@@ -519,14 +519,6 @@ impl<'d, 'a, T: Instance> Cordic16<'d, 'a, T> {
         let res_cnt = arg.len();
         let peri = self.inner.peri.reborrow();
 
-        // In q1.15 mode, 1 write/read to access 2 arguments/results
-        T::regs().csr().modify(|v| {
-            v.set_nargs(vals::Num::NUM1);
-            v.set_nres(vals::Num::NUM1);
-            v.set_argsize(vals::Size::BITS16);
-            v.set_ressize(vals::Size::BITS16);
-        });
-
         // To use cordic preload function, the first value is special.
         // It is loaded to CORDIC WDATA register out side of loop
         let first_value = arg[0];
