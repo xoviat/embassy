@@ -1,8 +1,9 @@
 //! Coordinate Rotation Digital Computer (CORDIC)
 
-use core::mem;
+use core::{mem, slice};
 
-use dsp_fixedpoint::Q32;
+use aligned::{A4, Aligned};
+use dsp_fixedpoint::{Q16, Q32};
 use embassy_embedded_hal::SetConfig;
 use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
@@ -494,10 +495,19 @@ impl<'d, 'a, T: Instance> Cordic16<'d, 'a, T> {
     ///
     /// In q1.15 mode, each WDATA write / RDATA read contains two packed 16-bit values,
     /// so `nargs` and `nres` are always 1 (one register access = two values).
-    ///
-    /// After this call, the CSR is restored to the 32-bit state from the current [`Config`].
     #[inline]
-    pub fn blocking_calc(&mut self, arg: &[u32], res: &mut [u32]) -> Result<usize, CordicError> {
+    pub fn blocking_calc(
+        &mut self,
+        arg: &Aligned<A4, [Q16<15>]>,
+        res: &mut Aligned<A4, [Q16<15>]>,
+    ) -> Result<usize, CordicError> {
+        let (arg, res) = unsafe {
+            (
+                slice::from_raw_parts(arg as *const _ as *const u32, size_of_val(arg) / 4),
+                slice::from_raw_parts_mut(res as *mut _ as *mut u32, size_of_val(arg) / 4),
+            )
+        };
+
         if arg.is_empty() {
             return Ok(0);
         }
@@ -539,15 +549,13 @@ impl<'d, 'a, T: Instance> Cordic16<'d, 'a, T> {
         res[cnt] = peri.read_result();
         // cnt += 1;
 
-        Ok(res_cnt)
+        Ok(res_cnt * 2)
     }
 
     /// Run an async CORDIC calculation in q1.15 format.
     ///
     /// In q1.15 mode, each WDATA write / RDATA read contains two packed 16-bit values,
     /// so `nargs` and `nres` are always 1 (one register access = two values).
-    ///
-    /// After this call, the CSR is restored to the 32-bit state from the current [`Config`].
     #[inline]
     pub async fn async_calc<'b, W, R>(
         &mut self,
@@ -556,13 +564,20 @@ impl<'d, 'a, T: Instance> Cordic16<'d, 'a, T> {
         irq: impl crate::interrupt::typelevel::Binding<W::Interrupt, crate::dma::InterruptHandler<W>>
         + crate::interrupt::typelevel::Binding<R::Interrupt, crate::dma::InterruptHandler<R>>
         + 'b,
-        arg: &[u32],
-        res: &mut [u32],
+        arg: &Aligned<A4, [Q16<15>]>,
+        res: &mut Aligned<A4, [Q16<15>]>,
     ) -> Result<usize, CordicError>
     where
         W: WriteDma<T>,
         R: ReadDma<T>,
     {
+        let (arg, res) = unsafe {
+            (
+                slice::from_raw_parts(arg as *const _ as *const u32, size_of_val(arg) / 4),
+                slice::from_raw_parts_mut(res as *mut _ as *mut u32, size_of_val(arg) / 4),
+            )
+        };
+
         if arg.is_empty() {
             return Ok(0);
         }
@@ -605,7 +620,7 @@ impl<'d, 'a, T: Instance> Cordic16<'d, 'a, T> {
             embassy_futures::join::join(write_transfer, read_transfer).await;
         }
 
-        Ok(res_cnt)
+        Ok(res_cnt * 2)
     }
 }
 
