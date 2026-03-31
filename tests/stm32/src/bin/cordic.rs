@@ -8,11 +8,12 @@
 #[path = "../common.rs"]
 mod common;
 use common::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::cordic::utils;
 use embassy_stm32::{cordic, rng};
 use num_traits::Float;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 /* input value control, can be changed */
 
@@ -68,11 +69,13 @@ async fn main(_spawner: Spawner) {
         .res_count(cordic::AccessCount::Two),
     );
 
+    let mut cordic_32 = cordic.q1_31();
+
     // calculate first result using blocking mode (2 args: ARG1 + ARG2)
-    let cnt0 = defmt::unwrap!(cordic.blocking_calc_32bit(&input_q1_31[..2], &mut output_q1_31));
+    let cnt0 = defmt::unwrap!(cordic_32.blocking_calc(&input_q1_31[..2], &mut output_q1_31));
 
     // switch to 1-arg mode without resetting ARG2
-    cordic.set_access_counts(cordic::AccessCount::One, cordic::AccessCount::Two);
+    cordic_32.set_access_counts(cordic::AccessCount::One, cordic::AccessCount::Two);
 
     #[cfg(feature = "stm32g491re")]
     let (mut write_dma, mut read_dma) = (dp.DMA1_CH4, dp.DMA1_CH5);
@@ -87,8 +90,8 @@ async fn main(_spawner: Spawner) {
 
     // calculate rest results using async mode (1 arg, reusing ARG2)
     let cnt1 = defmt::unwrap!(
-        cordic
-            .async_calc_32bit(
+        cordic_32
+            .async_calc(
                 write_dma.reborrow(),
                 read_dma.reborrow(),
                 irq,

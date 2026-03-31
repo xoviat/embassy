@@ -2,10 +2,11 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::cordic::{self, utils};
 use embassy_stm32::{bind_interrupts, dma, peripherals};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     GPDMA1_CHANNEL0 => dma::InterruptHandler<peripherals::GPDMA1_CH0>;
@@ -28,6 +29,8 @@ async fn main(_spawner: Spawner) {
         .res_count(cordic::AccessCount::Two),
     );
 
+    let mut cordic_32 = cordic.q1_31();
+
     // for output buf, the length is not that strict, larger than minimal required is ok.
     let mut output_f64 = [0f64; 19];
     let mut output_u32 = [0u32; 21];
@@ -45,7 +48,7 @@ async fn main(_spawner: Spawner) {
     input_buf[1] = unwrap!(utils::f64_to_q1_31(arg2[0]));
 
     // If input length is small, blocking mode can be used to minimize overhead.
-    let cnt0 = unwrap!(cordic.blocking_calc_32bit(
+    let cnt0 = unwrap!(cordic_32.blocking_calc(
         &input_buf[..2], // input length is strict, since driver use its length to detect calculation count
         &mut output_u32,
     ));
@@ -63,12 +66,12 @@ async fn main(_spawner: Spawner) {
     }
 
     // Switch to 1-arg mode (reuse ARG2 set above) without resetting ARG2
-    cordic.set_access_counts(cordic::AccessCount::One, cordic::AccessCount::Two);
+    cordic_32.set_access_counts(cordic::AccessCount::One, cordic::AccessCount::Two);
 
     // If calculation is a little longer, async mode can make use of DMA, and let core do some other stuff.
     let cnt1 = unwrap!(
-        cordic
-            .async_calc_32bit(
+        cordic_32
+            .async_calc(
                 dp.GPDMA1_CH0.reborrow(),
                 dp.GPDMA1_CH1.reborrow(),
                 Irqs,
