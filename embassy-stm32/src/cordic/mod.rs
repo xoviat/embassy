@@ -310,11 +310,11 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
                 let first_value = arg[0];
 
                 // preload 1st value to CORDIC, to start the CORDIC calc
-                peri.write_argument(first_value.inner as u32);
+                peri.write_q32(first_value);
 
                 for &arg1 in &arg[1..] {
                     // preload arg1 (for next calc)
-                    peri.write_argument(arg1.inner as u32);
+                    peri.write_q32(arg1);
 
                     // then read current result out
                     res[cnt] = peri.read_q32();
