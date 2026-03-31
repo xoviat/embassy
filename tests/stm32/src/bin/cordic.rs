@@ -64,12 +64,10 @@ async fn main(_spawner: Spawner) {
             cordic::Function::Sin,
             Default::default(),
             Default::default(),
-        ))
-        .arg_count(cordic::AccessCount::Two)
-        .res_count(cordic::AccessCount::Two),
+        )),
     );
 
-    let mut cordic_32 = cordic.q1_31();
+    let mut cordic_32 = cordic.q1_31(cordic::AccessCount::Two, cordic::AccessCount::Two);
 
     // calculate first result using blocking mode (2 args: ARG1 + ARG2)
     let cnt0 = defmt::unwrap!(cordic_32.blocking_calc(&input_q1_31[..2], &mut output_q1_31));

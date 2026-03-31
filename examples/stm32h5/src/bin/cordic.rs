@@ -24,12 +24,10 @@ async fn main(_spawner: Spawner) {
             cordic::Function::Sin,
             Default::default(),
             Default::default(),
-        ))
-        .arg_count(cordic::AccessCount::Two)
-        .res_count(cordic::AccessCount::Two),
+        )),
     );
 
-    let mut cordic_32 = cordic.q1_31();
+    let mut cordic_32 = cordic.q1_31(cordic::AccessCount::Two, cordic::AccessCount::Two);
 
     // for output buf, the length is not that strict, larger than minimal required is ok.
     let mut output_f64 = [0f64; 19];

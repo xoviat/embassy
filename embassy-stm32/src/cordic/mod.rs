@@ -21,8 +21,6 @@ pub use errors::*;
 /// CORDIC driver
 pub struct Cordic<'d, T: Instance> {
     peri: Peri<'d, T>,
-    arg_count: AccessCount,
-    res_count: AccessCount,
 }
 
 /// Cordic instance
@@ -66,8 +64,6 @@ pub struct Config {
     function: Function,
     precision: Precision,
     scale: Scale,
-    arg_count: AccessCount,
-    res_count: AccessCount,
 }
 
 impl Config {
@@ -80,31 +76,11 @@ impl Config {
             function,
             precision,
             scale,
-            arg_count: AccessCount::One,
-            res_count: AccessCount::Two,
         };
 
         config.check_scale()?;
 
         Ok(config)
-    }
-
-    /// Set the argument access count.
-    ///
-    /// `AccessCount::One`: each WDATA write provides one argument (ARG1), reusing the previous ARG2.
-    /// `AccessCount::Two`: arguments are written in pairs (ARG1 then ARG2) to WDATA.
-    pub fn arg_count(mut self, arg_count: AccessCount) -> Self {
-        self.arg_count = arg_count;
-        self
-    }
-
-    /// Set the result access count.
-    ///
-    /// `AccessCount::One`: each calculation produces one RDATA read (primary result only).
-    /// `AccessCount::Two`: each calculation produces two RDATA reads (primary + secondary).
-    pub fn res_count(mut self, res_count: AccessCount) -> Self {
-        self.res_count = res_count;
-        self
     }
 
     fn check_scale(&self) -> Result<(), ConfigError> {
@@ -173,14 +149,8 @@ impl<'d, T: Instance> SetConfig for Cordic<'d, T> {
             v.set_func(vals::Func::from_bits(config.function as u8));
             v.set_precision(vals::Precision::from_bits(config.precision as u8));
             v.set_scale(vals::Scale::from_bits(config.scale as u8));
-            v.set_nargs(match config.arg_count {
-                AccessCount::One => vals::Num::NUM1,
-                AccessCount::Two => vals::Num::NUM2,
-            });
-            v.set_nres(match config.res_count {
-                AccessCount::One => vals::Num::NUM1,
-                AccessCount::Two => vals::Num::NUM2,
-            });
+            v.set_nargs(vals::Num::NUM1);
+            v.set_nres(vals::Num::NUM2);
             v.set_argsize(vals::Size::BITS32);
             v.set_ressize(vals::Size::BITS32);
         });
@@ -188,9 +158,6 @@ impl<'d, T: Instance> SetConfig for Cordic<'d, T> {
         // Changing NRES or other CSR fields above can re-assert RRDY if secondary
         // results from the dummy calc were not fully drained. Clean it again.
         self.clean_rrdy_flag();
-
-        self.arg_count = config.arg_count;
-        self.res_count = config.res_count;
 
         Ok(())
     }
@@ -202,40 +169,29 @@ impl<'d, T: Instance> Cordic<'d, T> {
     pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
         rcc::enable_and_reset::<T>();
 
-        let mut instance = Self {
-            peri,
-            arg_count: config.arg_count,
-            res_count: config.res_count,
-        };
+        let mut instance = Self { peri };
         instance.set_config(&config).unwrap();
 
         instance
     }
 
-    fn set_access_counts(&mut self, arg_count: AccessCount, res_count: AccessCount) {
-        self.arg_count = arg_count;
-        self.res_count = res_count;
+    /// q1.31 related
+    /// Set the argument access count.
+    ///
+    /// `AccessCount::One`: each WDATA write provides one argument (ARG1), reusing the previous ARG2.
+    /// `AccessCount::Two`: arguments are written in pairs (ARG1 then ARG2) to WDATA.
+    /// Set the result access count.
+    ///
+    /// `AccessCount::One`: each calculation produces one RDATA read (primary result only).
+    /// `AccessCount::Two`: each calculation produces two RDATA reads (primary + secondary).
+    pub fn q1_31<'a>(&'a mut self, arg_count: AccessCount, res_count: AccessCount) -> Cordic32<'d, 'a, T> {
+        // Restore CSR to 32-bit state matching current `Config`
         T::regs().csr().modify(|v| {
             v.set_nargs(match arg_count {
                 AccessCount::One => vals::Num::NUM1,
                 AccessCount::Two => vals::Num::NUM2,
             });
             v.set_nres(match res_count {
-                AccessCount::One => vals::Num::NUM1,
-                AccessCount::Two => vals::Num::NUM2,
-            });
-        });
-    }
-
-    /// q1.31 related
-    pub fn q1_31<'a>(&'a mut self) -> Cordic32<'d, 'a, T> {
-        // Restore CSR to 32-bit state matching current `Config`
-        T::regs().csr().modify(|v| {
-            v.set_nargs(match self.arg_count {
-                AccessCount::One => vals::Num::NUM1,
-                AccessCount::Two => vals::Num::NUM2,
-            });
-            v.set_nres(match self.res_count {
                 AccessCount::One => vals::Num::NUM1,
                 AccessCount::Two => vals::Num::NUM2,
             });
@@ -285,7 +241,16 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
     /// modes within the same function configuration (e.g. after an initial
     /// 2-arg call sets ARG2, switch to 1-arg mode for the hot loop).
     pub fn set_access_counts(&mut self, arg_count: AccessCount, res_count: AccessCount) {
-        self.inner.set_access_counts(arg_count, res_count)
+        T::regs().csr().modify(|v| {
+            v.set_nargs(match arg_count {
+                AccessCount::One => vals::Num::NUM1,
+                AccessCount::Two => vals::Num::NUM2,
+            });
+            v.set_nres(match res_count {
+                AccessCount::One => vals::Num::NUM1,
+                AccessCount::Two => vals::Num::NUM2,
+            });
+        });
     }
 
     /// Run a blocking CORDIC calculation in q1.31 format.
@@ -299,8 +264,9 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
             return Ok(0);
         }
 
-        let arg1_only = matches!(self.inner.arg_count, AccessCount::One);
-        let res1_only = matches!(self.inner.res_count, AccessCount::One);
+        let csr = T::regs().csr().read();
+        let arg1_only = csr.nargs() == vals::Num::NUM1;
+        let res1_only = csr.nres() == vals::Num::NUM1;
 
         let res_cnt = Self::check_arg_res_length(arg.len(), res.len(), arg1_only, res1_only)?;
 
@@ -407,8 +373,9 @@ impl<'d, 'a, T: Instance> Cordic32<'d, 'a, T> {
             return Ok(0);
         }
 
-        let arg1_only = matches!(self.inner.arg_count, AccessCount::One);
-        let res1_only = matches!(self.inner.res_count, AccessCount::One);
+        let csr = T::regs().csr().read();
+        let arg1_only = csr.nargs() == vals::Num::NUM1;
+        let res1_only = csr.nres() == vals::Num::NUM1;
 
         let res_cnt = Self::check_arg_res_length(arg.len(), res.len(), arg1_only, res1_only)?;
 
@@ -486,15 +453,6 @@ pub struct Cordic16<'d, 'a, T: Instance> {
 
 /// q1.15 related
 impl<'d, 'a, T: Instance> Cordic16<'d, 'a, T> {
-    /// Change `arg_count` and `res_count` without resetting ARG2.
-    ///
-    /// This is a lightweight CSR update for switching between 1-arg and 2-arg
-    /// modes within the same function configuration (e.g. after an initial
-    /// 2-arg call sets ARG2, switch to 1-arg mode for the hot loop).
-    pub fn set_access_counts(&mut self, arg_count: AccessCount, res_count: AccessCount) {
-        self.inner.set_access_counts(arg_count, res_count)
-    }
-
     /// Run a blocking CORDIC calculation in q1.15 format.
     ///
     /// In q1.15 mode, each WDATA write / RDATA read contains two packed 16-bit values,
