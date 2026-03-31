@@ -242,7 +242,7 @@ impl<'d, T: Instance> Cordic<'d, T> {
         Cordic32 { inner: self }
     }
 
-    /// q1.31 related
+    /// q1.16 related
     pub fn q1_16<'a>(&'a mut self) -> Cordic16<'d, 'a, T> {
         // In q1.15 mode, 1 write/read to access 2 arguments/results
         T::regs().csr().modify(|v| {
