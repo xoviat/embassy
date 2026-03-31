@@ -8,12 +8,11 @@
 #[path = "../common.rs"]
 mod common;
 use common::*;
-use defmt_rtt as _;
 use dsp_fixedpoint::Q32;
 use embassy_executor::Spawner;
 use embassy_stm32::{cordic, rng};
 use num_traits::Float;
-use panic_probe as _;
+use {defmt_rtt as _, panic_probe as _};
 
 /* input value control, can be changed */
 
