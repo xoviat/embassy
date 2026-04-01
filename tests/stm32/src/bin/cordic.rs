@@ -7,8 +7,9 @@
 
 #[path = "../common.rs"]
 mod common;
+use aligned::{A4, Aligned};
 use common::*;
-use dsp_fixedpoint::Q32;
+use dsp_fixedpoint::{Q16, Q32};
 use embassy_executor::Spawner;
 use embassy_stm32::{cordic, rng};
 use num_traits::Float;
@@ -55,8 +56,6 @@ async fn main(_spawner: Spawner) {
     // CORDIC calculation
     //
 
-    let mut output_q1_31 = [Q32::<31>::new(0); OUTPUT_LENGTH];
-
     // setup Cordic driver with 2-arg, 2-result config for the initial call
     let mut cordic = cordic::Cordic::new(
         dp.CORDIC,
@@ -67,13 +66,13 @@ async fn main(_spawner: Spawner) {
         )),
     );
 
-    let mut cordic_32 = cordic.q1_31(cordic::AccessCount::Two, cordic::AccessCount::Two);
-
-    // calculate first result using blocking mode (2 args: ARG1 + ARG2)
-    let cnt0 = defmt::unwrap!(cordic_32.blocking_calc(&input_q1_31[..2], &mut output_q1_31));
-
-    // switch to 1-arg mode without resetting ARG2
-    cordic_32.set_access_counts(cordic::AccessCount::One, cordic::AccessCount::Two);
+    let mut output_q1_31 = [Q32::<31>::new(0); OUTPUT_LENGTH];
+    let mut output_q1_15 = Aligned::<A4, _>([Q16::<15>::new(0); OUTPUT_LENGTH]);
+    let mut cordic_result_f64 = [0.0f64; OUTPUT_LENGTH];
+    let mut cordic_result_f32 = [0.0f32; OUTPUT_LENGTH];
+    let cnt0: usize;
+    let cnt1: usize;
+    let cnt2: usize;
 
     #[cfg(feature = "stm32g491re")]
     let (mut write_dma, mut read_dma) = (dp.DMA1_CH4, dp.DMA1_CH5);
@@ -86,26 +85,64 @@ async fn main(_spawner: Spawner) {
     ))]
     let (mut write_dma, mut read_dma) = (dp.GPDMA1_CH0, dp.GPDMA1_CH1);
 
-    // calculate rest results using async mode (1 arg, reusing ARG2)
-    let cnt1 = defmt::unwrap!(
-        cordic_32
-            .async_calc(
-                write_dma.reborrow(),
-                read_dma.reborrow(),
-                irq,
-                &input_q1_31[2..],
-                &mut output_q1_31[cnt0..],
-            )
-            .await
-    );
+    {
+        let mut cordic_32 = cordic.q1_31(cordic::AccessCount::Two, cordic::AccessCount::Two);
 
-    // all output value length should be the same as our output buffer size
-    defmt::assert_eq!(cnt0 + cnt1, output_q1_31.len());
+        // calculate first result using blocking mode (2 args: ARG1 + ARG2)
+        cnt0 = defmt::unwrap!(cordic_32.blocking_calc(&input_q1_31[..2], &mut output_q1_31));
 
-    let mut cordic_result_f64 = [0.0f64; OUTPUT_LENGTH];
+        // switch to 1-arg mode without resetting ARG2
+        cordic_32.set_access_counts(cordic::AccessCount::One, cordic::AccessCount::Two);
 
-    for (f64_val, u32_val) in cordic_result_f64.iter_mut().zip(output_q1_31) {
-        *f64_val = u32_val.as_f64();
+        // calculate rest results using async mode (1 arg, reusing ARG2)
+        cnt1 = defmt::unwrap!(
+            cordic_32
+                .async_calc(
+                    write_dma.reborrow(),
+                    read_dma.reborrow(),
+                    irq,
+                    &input_q1_31[2..],
+                    &mut output_q1_31[cnt0..],
+                )
+                .await
+        );
+
+        // all output value length should be the same as our output buffer size
+        defmt::assert_eq!(cnt0 + cnt1, output_q1_31.len());
+
+        for (f64_val, u32_val) in cordic_result_f64.iter_mut().zip(output_q1_31) {
+            *f64_val = u32_val.as_f64();
+        }
+    }
+
+    {
+        let mut cordic_16 = cordic.q1_16();
+
+        let mut input_q1_15 = Aligned::<A4, _>([Q16::<15>::new(0); INPUT_U32_COUNT - 1]);
+        for (i, q1_31) in input_q1_31
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, val)| if idx != 1 { Some(val) } else { None })
+            .enumerate()
+        {
+            input_q1_15[i] = Q16::from_f32(q1_31.as_f32());
+        }
+
+        cnt2 = defmt::unwrap!(
+            cordic_16
+                .async_calc(
+                    write_dma.reborrow(),
+                    read_dma.reborrow(),
+                    irq,
+                    &input_q1_15,
+                    &mut output_q1_15,
+                )
+                .await
+        );
+
+        for (f32_val, u32_val) in cordic_result_f32[..].iter_mut().zip(&output_q1_15[..]) {
+            *f32_val = u32_val.as_f32();
+        }
     }
 
     //
@@ -140,6 +177,17 @@ async fn main(_spawner: Spawner) {
             // 2.0.powi(-19) is the max residual error for Sin function, in q1.31 format, with 24 iterations (aka PRECISION = 6)
             defmt::assert!((cord_res - soft_res).abs() <= 2.0.powi(-19));
         }
+    }
+
+    for (cord_res, soft_res) in cordic_result_f32[..cnt2].iter().zip(
+        software_result_f64
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| (i - 1).is_multiple_of(2))
+            .map(|(_, f)| f),
+    ) {
+        // 2.0.powi(-19) is the max residual error for Sin function, in q1.31 format, with 24 iterations (aka PRECISION = 6)
+        defmt::assert_eq!(*cord_res as f64, *soft_res);
     }
 
     info!("Test OK");
