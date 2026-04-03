@@ -35,7 +35,6 @@ type PacketHeader = LinkedListNode;
 
 /// Transport Layer for the Mailbox interface
 pub struct TlMbox<'d> {
-    pub sys_event: SchiSysEventReady,
     pub sys_subsystem: Sys<'d>,
     pub mm_subsystem: MemoryManager<'d>,
     #[cfg(feature = "wb55_ble")]
@@ -177,14 +176,9 @@ impl<'d> TlMbox<'d> {
         ] = Ipcc::new(ipcc, _irqs, config).split();
 
         let mm = sub::mm::MemoryManager::new(ipcc_mm_release_buffer_channel);
-        let mut sys = sub::sys::Sys::new(ipcc_system_cmd_rsp_channel, ipcc_system_event_channel);
-
-        let sys_event = sys.read_ready().await?;
-
-        debug!("sys event: {}", sys_event);
+        let sys = sub::sys::Sys::new(ipcc_system_cmd_rsp_channel, ipcc_system_event_channel);
 
         Ok(Self {
-            sys_event: sys_event,
             sys_subsystem: sys,
             #[cfg(feature = "wb55_ble")]
             ble_subsystem: sub::ble::Ble::new(
