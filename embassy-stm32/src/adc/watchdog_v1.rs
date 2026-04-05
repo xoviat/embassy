@@ -3,7 +3,7 @@ use core::task::Poll;
 
 use stm32_metapac::adc::vals::{Align, Awdsgl, Res, SampleTime};
 
-use crate::adc::{Adc, AdcChannel, Instance};
+use crate::adc::{Adc, AdcChannel, AdcRegs, DefaultInstance};
 
 /// This enum is passed into `Adc::init_watchdog` to specify the channels for the watchdog to monitor
 pub enum WatchdogChannels {
@@ -28,7 +28,7 @@ impl WatchdogChannels {
     }
 }
 
-impl<'d, T: Instance> Adc<'d, T> {
+impl<'d, T: DefaultInstance> Adc<'d, T> {
     /// Configure the analog window watchdog to monitor one or more ADC channels
     ///
     /// `high_threshold` and `low_threshold` are expressed in the same way as ADC results. The format
@@ -69,7 +69,7 @@ impl<'d, T: Instance> Adc<'d, T> {
     /// ```
     pub async fn monitor_watchdog(&mut self, sample_time: SampleTime) -> u16 {
         let _scoped_wake_guard = <T as crate::rcc::SealedRccPeripheral>::RCC_INFO.wake_guard();
-        self.enable();
+        T::regs().enable();
 
         assert!(
             match T::regs().cfgr1().read().awdsgl() {
@@ -184,6 +184,7 @@ impl<'d, T: Instance> Adc<'d, T> {
         }
     }
 
+    #[allow(unused)]
     pub(crate) fn teardown_awd() {
         Self::stop_awd();
         T::regs().cfgr1().modify(|w| w.set_awden(false));
