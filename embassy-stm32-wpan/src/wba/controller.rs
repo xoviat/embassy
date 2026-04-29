@@ -74,6 +74,13 @@ unsafe extern "C" fn ble_stack_process_bg() {
 #[derive(Clone, Copy)]
 pub struct ChannelPacket(pub [u8; MAX_BLE_PKT_SIZE], pub usize);
 
+impl ChannelPacket {
+    pub fn copy_from(&mut self, data: &[u8]) {
+        self.0[..data.len()].copy_from_slice(data);
+        self.1 = data.len();
+    }
+}
+
 impl Deref for ChannelPacket {
     type Target = [u8];
 
