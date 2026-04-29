@@ -22,6 +22,8 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::zerocopy_channel;
 use stm32_bindings::ble::{BleStack_Process, BleStack_Request};
 use stm32wb_hci::event::Packet;
+use stm32wb_hci::host::HciHeader;
+use stm32wb_hci::vendor::CommandHeader;
 use stm32wb_hci::{Event, event};
 
 use crate::bluetooth::error::BleError;
@@ -73,6 +75,13 @@ unsafe extern "C" fn ble_stack_process_bg() {
 
 #[derive(Clone, Copy)]
 pub struct ChannelPacket(pub [u8; MAX_BLE_PKT_SIZE], pub usize);
+
+impl ChannelPacket {
+    pub fn copy_from(&mut self, data: &[u8]) {
+        self.0[..data.len()].copy_from_slice(data);
+        self.1 = data.len();
+    }
+}
 
 impl Deref for ChannelPacket {
     type Target = [u8];
@@ -182,12 +191,8 @@ impl Controller {
 
         // Flush pending HCI commands through BleStack_Process.
         // This delivers scan enable, connection parameters, etc. to the LL.
-        loop {
-            let result = unsafe { BleStack_Process() };
-            if result != BLE_SLEEPMODE_RUNNING {
-                break;
-            }
-        }
+        util_seq::UTIL_SEQ_ResumeTask(TASK_BLE_HOST_MASK);
+        util_seq::seq_resume();
 
         // Run the sequencer once more to process any LL events from the enable
         util_seq::UTIL_SEQ_SetTask(TASK_LINK_LAYER_MASK, 0);
@@ -262,9 +267,10 @@ impl stm32wb_hci::Controller for Controller {
 
     async fn controller_write(&mut self, opcode: stm32wb_hci::Opcode, payload: &[u8]) {
         self.exec(|buf| {
-            buf[0] = 0x01;
-            buf[1..3].copy_from_slice(&opcode.0.to_le_bytes());
-            buf[3..3 + payload.len()].copy_from_slice(payload);
+            let (header, pkt) = buf.split_at_mut(CommandHeader::HEADER_LENGTH);
+
+            CommandHeader::new(opcode, payload.len()).copy_into_slice(header);
+            pkt[..payload.len()].copy_from_slice(payload);
         });
     }
 }

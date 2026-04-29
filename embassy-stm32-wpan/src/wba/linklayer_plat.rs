@@ -1902,8 +1902,7 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
         return 0;
     };
 
-    slot.0.copy_from_slice(event_data);
-    slot.1 = event_data.len();
+    slot.copy_from(event_data);
     slot.send_done();
 
     0 // Success
