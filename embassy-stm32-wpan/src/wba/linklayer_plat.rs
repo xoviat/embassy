@@ -90,7 +90,7 @@ use embassy_stm32::pac::{FLASH, PWR, RCC};
 use embassy_stm32::peripherals::{AES as AesPeriph, PKA as PkaPeriph, RNG};
 use embassy_stm32::pka::{EccPoint, EcdsaCurveParams, Pka};
 use embassy_stm32::rng::Rng;
-use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::zerocopy_channel;
 use embassy_time::{Duration, Instant, block_for};
@@ -153,15 +153,13 @@ static mut CS_RESTORE_STATE: Option<critical_section::RestoreState> = None;
 // Optional hardware RNG instance for true random number generation.
 // The RNG peripheral pointer is stored here to be used by LINKLAYER_PLAT_GetRNG.
 // This must be set by the application using `set_rng_instance` before the link layer requests random numbers.
-pub(crate) static mut HARDWARE_RNG: Option<&'static Mutex<CriticalSectionRawMutex, RefCell<Rng<'static, RNG>>>> = None;
+pub(crate) static mut HARDWARE_RNG: Option<&'static CriticalSectionMutex<RefCell<Rng<'static, RNG>>>> = None;
 
 // Hardware AES and PKA driver instances, following the HARDWARE_RNG pattern.
 // Stored as statics so the extern "C" BLEPLAT callbacks can access them.
-pub(crate) static mut HARDWARE_AES: Option<
-    &'static Mutex<CriticalSectionRawMutex, RefCell<Aes<'static, AesPeriph, Blocking>>>,
-> = None;
-pub(crate) static mut HARDWARE_PKA: Option<&'static Mutex<CriticalSectionRawMutex, RefCell<Pka<'static, PkaPeriph>>>> =
+pub(crate) static mut HARDWARE_AES: Option<&'static CriticalSectionMutex<RefCell<Aes<'static, AesPeriph, Blocking>>>> =
     None;
+pub(crate) static mut HARDWARE_PKA: Option<&'static CriticalSectionMutex<RefCell<Pka<'static, PkaPeriph>>>> = None;
 
 pub(crate) static mut EVENT_CHANNEL: Option<zerocopy_channel::Sender<'static, CriticalSectionRawMutex, ChannelPacket>> =
     None;
@@ -1900,21 +1898,12 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
         util_seq::UTIL_SEQ_SetTask(TASK_BLE_HOST_MASK, TASK_PRIO_BLE_HOST);
     }
 
-    // Parse and queue the event for processing.
-    // Skip byte 0 (0x04 HCI Event packet indicator) — the parser expects
-    // data starting at the event code byte.
-    let parse_data = if length >= 2 && event_data[0] == 0x04 {
-        &event_data[1..]
-    } else {
-        event_data
-    };
-
     let Some(mut slot) = unsafe { EVENT_CHANNEL.as_mut() }.unwrap().try_send() else {
         return 0;
     };
 
-    slot.0.copy_from_slice(parse_data);
-    slot.1 = parse_data.len();
+    slot.0.copy_from_slice(event_data);
+    slot.1 = event_data.len();
     slot.send_done();
 
     0 // Success
