@@ -135,13 +135,16 @@ impl<'a> MacRx<'a> {
 
         // Return a new event box
         self.ipcc_mac_802_15_4_notification_ack_channel
-            .receive(|| unsafe {
-                // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
-                // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
-                MAC_EVT_OUT.store(true, Ordering::SeqCst);
+            .receive(
+                || unsafe {
+                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
+                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
+                    MAC_EVT_OUT.store(true, Ordering::SeqCst);
 
-                Some(EvtBox::new(MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _))
-            })
+                    Some(EvtBox::new(MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _))
+                },
+                true,
+            )
             .await
     }
 
@@ -164,7 +167,7 @@ impl<'a> evt::MemoryManager for MacRx<'a> {
         );
 
         // Clear the rx flag
-        let _ = poll_once(Ipcc::receive::<()>(3, || None));
+        let _ = poll_once(Ipcc::receive::<()>(3, || None, false));
 
         // Allow a new read call
         MAC_EVT_OUT.store(false, Ordering::Release);

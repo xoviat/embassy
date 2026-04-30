@@ -96,15 +96,18 @@ impl<'a> Ble<'a> {
     /// `HW_IPCC_BLE_EvtNot`
     pub async fn tl_read(&mut self) -> EvtBox<Self> {
         self.ipcc_ble_event_channel
-            .receive(|| unsafe {
-                if let Some(node_ptr) =
-                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                {
-                    Some(EvtBox::new(node_ptr.cast()))
-                } else {
-                    None
-                }
-            })
+            .receive(
+                || unsafe {
+                    if let Some(node_ptr) =
+                        critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                    {
+                        Some(EvtBox::new(node_ptr.cast()))
+                    } else {
+                        None
+                    }
+                },
+                false,
+            )
             .await
     }
 
@@ -191,15 +194,18 @@ impl<'a> BleRx<'a> {
     /// `HW_IPCC_BLE_EvtNot`
     pub async fn tl_read(&mut self) -> EvtBox<Self> {
         self.ipcc_ble_event_channel
-            .receive(|| unsafe {
-                if let Some(node_ptr) =
-                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                {
-                    Some(EvtBox::new(node_ptr.cast()))
-                } else {
-                    None
-                }
-            })
+            .receive(
+                || unsafe {
+                    if let Some(node_ptr) =
+                        critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                    {
+                        Some(EvtBox::new(node_ptr.cast()))
+                    } else {
+                        None
+                    }
+                },
+                false,
+            )
             .await
     }
 }

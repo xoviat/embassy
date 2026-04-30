@@ -125,15 +125,18 @@ impl<'a> Sys<'a> {
     /// handles the event channels directly.
     pub async fn read(&mut self) -> EvtBox<mm::MemoryManager<'_>> {
         self.ipcc_system_event_channel
-            .receive(|| unsafe {
-                if let Some(node_ptr) =
-                    critical_section::with(|cs| LinkedListNode::remove_head(cs, SYSTEM_EVT_QUEUE.as_mut_ptr()))
-                {
-                    Some(EvtBox::new(node_ptr.cast()))
-                } else {
-                    None
-                }
-            })
+            .receive(
+                || unsafe {
+                    if let Some(node_ptr) =
+                        critical_section::with(|cs| LinkedListNode::remove_head(cs, SYSTEM_EVT_QUEUE.as_mut_ptr()))
+                    {
+                        Some(EvtBox::new(node_ptr.cast()))
+                    } else {
+                        None
+                    }
+                },
+                false,
+            )
             .await
     }
 }
