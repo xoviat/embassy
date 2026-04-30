@@ -22,9 +22,9 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::zerocopy_channel;
 use stm32_bindings::ble::{BleStack_Process, BleStack_Request};
 use stm32wb_hci::event::Packet;
-use stm32wb_hci::host::HciHeader;
-use stm32wb_hci::vendor::CommandHeader;
-use stm32wb_hci::{Event, event};
+use stm32wb_hci::host::uart;
+use stm32wb_hci::host::uart::UartHci;
+use stm32wb_hci::{Event, WritableController};
 
 use crate::bluetooth::error::BleError;
 use crate::host_if::{MAX_BLE_PKT_SIZE, TASK_BLE_HOST_MASK, TASK_LINK_LAYER_MASK, TASK_PRIO_BLE_HOST};
@@ -139,7 +139,7 @@ macro_rules! new_controller_state {
 pub struct Controller {
     state_ptr: *mut ControllerState,
     receiver: zerocopy_channel::Receiver<'static, CriticalSectionRawMutex, ChannelPacket>,
-    cmd_buf: ([u8; 255], usize),
+    cmd_buf: ([u8; 256], usize),
 }
 
 impl Controller {
@@ -205,11 +205,11 @@ impl Controller {
         Ok(Self {
             state_ptr,
             receiver,
-            cmd_buf: ([0u8; 255], 0),
+            cmd_buf: ([0u8; 256], 0),
         })
     }
 
-    fn exec<R>(&mut self, f: impl FnOnce(&mut [u8; 255]) -> R) -> R {
+    fn exec<R>(&mut self, f: impl FnOnce(&mut [u8; 256]) -> R) -> R {
         let ret = f(&mut self.cmd_buf.0);
         self.cmd_buf.1 = unsafe { BleStack_Request(&mut self.cmd_buf.0 as *mut u8) }.into();
 
@@ -236,42 +236,37 @@ impl Controller {
         drop(self);
         unsafe { &mut *ptr }
     }
-
-    pub async fn read_event(&mut self) -> Result<Event, event::Error> {
-        if let Some(buf) = self.pop_buf() {
-            Event::new(Packet(&buf[1..]))
-        } else {
-            let slot = self.receiver.receive().await;
-            // Parse and queue the event for processing.
-            // Skip byte 0 (0x04 HCI Event packet indicator) — the parser expects
-            // data starting at the event code byte.
-            let parse_data = if *&slot.len() >= 2 && *&slot[0] == 0x04 {
-                &slot[1..]
-            } else {
-                &slot
-            };
-
-            let event = Event::new(Packet(parse_data));
-
-            slot.receive_done();
-
-            event
-        }
-    }
 }
 
-impl stm32wb_hci::Controller for Controller {
-    async fn controller_read_into(&mut self, _buf: &mut [u8]) {
-        panic!("use `read_event` to read events")
-    }
-
+impl WritableController for Controller {
     async fn controller_write(&mut self, opcode: stm32wb_hci::Opcode, payload: &[u8]) {
         self.exec(|buf| {
+            use stm32wb_hci::host::HciHeader;
+            use stm32wb_hci::host::uart::CommandHeader;
+
             let (header, pkt) = buf.split_at_mut(CommandHeader::HEADER_LENGTH);
 
             CommandHeader::new(opcode, payload.len()).copy_into_slice(header);
             pkt[..payload.len()].copy_from_slice(payload);
         });
+    }
+}
+
+impl UartHci for Controller {
+    async fn read(&mut self) -> Result<uart::Packet, uart::Error> {
+        let event = if let Some(buf) = self.pop_buf() {
+            Event::new(Packet(&buf[1..])).map_err(uart::Error::BLE)?
+        } else {
+            let slot = self.receiver.receive().await;
+
+            let event = Event::new(Packet(&slot[1..])).map_err(uart::Error::BLE)?;
+
+            slot.receive_done();
+
+            event
+        };
+
+        Ok(uart::Packet::Event(event))
     }
 }
 

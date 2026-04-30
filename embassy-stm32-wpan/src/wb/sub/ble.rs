@@ -1,7 +1,9 @@
 use core::ptr;
 
 use embassy_stm32::ipcc::{IpccRxChannel, IpccTxChannel};
-use hci::Opcode;
+use stm32wb_hci::event::Packet;
+use stm32wb_hci::host::uart::{self, UartHci};
+use stm32wb_hci::{Event, Opcode, WritableController};
 
 use crate::cmd::CmdPacket;
 use crate::consts::{TL_BLEEVT_CC_OPCODE, TL_BLEEVT_CS_OPCODE, TlPacketType};
@@ -147,18 +149,19 @@ impl<'a> evt::MemoryManager for Ble<'a> {
     }
 }
 
-pub extern crate stm32wb_hci as hci;
-
-impl<'a> hci::Controller for Ble<'a> {
+impl<'a> WritableController for Ble<'a> {
     async fn controller_write(&mut self, opcode: Opcode, payload: &[u8]) {
         self.tl_write(opcode.0, payload).await;
     }
+}
 
-    async fn controller_read_into(&mut self, buf: &mut [u8]) {
+impl<'a> UartHci for Ble<'a> {
+    async fn read(&mut self) -> Result<uart::Packet, uart::Error> {
         let evt_box = self.tl_read().await;
-        let evt_serial = evt_box.serial();
 
-        buf[..evt_serial.len()].copy_from_slice(evt_serial);
+        Ok(uart::Packet::Event(
+            Event::new(Packet(&evt_box.serial()[1..])).map_err(uart::Error::BLE)?,
+        ))
     }
 }
 
@@ -219,26 +222,18 @@ impl<'a> evt::MemoryManager for BleRx<'a> {
     }
 }
 
-/// Implement Controller for TX (Write only)
-impl<'a> hci::Controller for BleTx<'a> {
+impl<'a> WritableController for BleTx<'a> {
     async fn controller_write(&mut self, opcode: Opcode, payload: &[u8]) {
         self.tl_write(opcode.0, payload).await;
     }
-
-    async fn controller_read_into(&mut self, _buf: &mut [u8]) {
-        panic!("BleTx cannot read!");
-    }
 }
 
-/// Implement Controller for RX (Read only)
-impl<'a> hci::Controller for BleRx<'a> {
-    async fn controller_write(&mut self, _opcode: Opcode, _payload: &[u8]) {
-        panic!("BleRx cannot write!");
-    }
-
-    async fn controller_read_into(&mut self, buf: &mut [u8]) {
+impl<'a> UartHci for BleRx<'a> {
+    async fn read(&mut self) -> Result<uart::Packet, uart::Error> {
         let evt_box = self.tl_read().await;
-        let evt_serial = evt_box.serial();
-        buf[..evt_serial.len()].copy_from_slice(evt_serial);
+
+        Ok(uart::Packet::Event(
+            Event::new(Packet(&evt_box.serial()[1..])).map_err(uart::Error::BLE)?,
+        ))
     }
 }

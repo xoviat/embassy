@@ -166,7 +166,7 @@ async fn main(_spawner: Spawner) {
     let response = ble.read().await.unwrap();
     defmt::info!("{}", response);
 
-    cortex_m::asm::wfi();
+    cortex_m::asm::bkpt();
 }
 
 fn get_bd_addr() -> BdAddr {

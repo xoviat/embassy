@@ -30,13 +30,14 @@ pub mod unsafe_linked_list;
 #[cfg(feature = "wb-mac")]
 pub mod mac;
 
+#[cfg(feature = "wb-ble")]
+pub use stm32wb_hci as hci;
+
 use crate::shci::SchiSysEventReady;
 #[cfg(feature = "wb-ble")]
 use crate::shci::ShciBleInitCmdParam;
 #[cfg(feature = "wb-ble")]
 use crate::sub::ble::Ble;
-#[cfg(feature = "wb-ble")]
-pub use crate::sub::ble::hci;
 #[cfg(feature = "wb-mac")]
 use crate::sub::mac::Mac;
 
@@ -227,15 +228,20 @@ impl<'d> TlMbox<'d> {
     #[cfg(feature = "wb-ble")]
     /// Initialise the BLE subsystem
     pub async fn init_ble(mut self, param: ShciBleInitCmdParam) -> Result<(Ble<'d>, MemoryManager<'d>), ()> {
-        match select(
-            self.mm_subsystem.run_queue(),
-            self.sys_subsystem.shci_c2_ble_init(param),
-        )
+        debug!("starting ble...");
+        with_timeout(Duration::from_millis(500), async {
+            match select(
+                self.mm_subsystem.run_queue(),
+                self.sys_subsystem.shci_c2_ble_init(param),
+            )
+            .await
+            {
+                Either::Second(res) => res,
+                _ => unreachable!(),
+            }
+        })
         .await
-        {
-            Either::Second(res) => res,
-            _ => unreachable!(),
-        }?;
+        .map_err(|_| ())??;
 
         Ok((self.ble_subsystem, self.mm_subsystem))
     }
@@ -243,15 +249,20 @@ impl<'d> TlMbox<'d> {
     #[cfg(feature = "wb-mac")]
     /// Initialise the BLE subsystem
     pub async fn init_mac(mut self) -> Result<(Mac<'d>, MemoryManager<'d>), ()> {
-        match select(
-            self.mm_subsystem.run_queue(),
-            self.sys_subsystem.shci_c2_mac_802_15_4_init(),
-        )
+        debug!("starting mac...");
+        with_timeout(Duration::from_millis(500), async {
+            match select(
+                self.mm_subsystem.run_queue(),
+                self.sys_subsystem.shci_c2_mac_802_15_4_init(),
+            )
+            .await
+            {
+                Either::Second(res) => res,
+                _ => unreachable!(),
+            }
+        })
         .await
-        {
-            Either::Second(res) => res,
-            _ => unreachable!(),
-        }?;
+        .map_err(|_| ())??;
 
         Ok((self.mac_subsystem, self.mm_subsystem))
     }

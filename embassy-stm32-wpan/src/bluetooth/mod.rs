@@ -22,6 +22,7 @@ use stm32wb_hci::event::{
     DisconnectionComplete, LeConnectionComplete, LeConnectionUpdateComplete, LeDataLengthChangeEvent,
     LeEnhancedConnectionComplete, LePhyUpdateComplete,
 };
+use stm32wb_hci::host::uart::{self, UartHci};
 use stm32wb_hci::{BdAddr, ConnectionHandle, Event, Status};
 
 use crate::bluetooth::error::BleError;
@@ -750,7 +751,7 @@ impl<M: Mode> HCI<M> {
     /// raw events (e.g., for connection management).
     pub async fn read_event(&mut self) -> stm32wb_hci::Event {
         loop {
-            if let Ok(event) = self.controller.read_event().await {
+            if let Ok(uart::Packet::Event(event)) = self.controller.read().await {
                 return event;
             }
         }
