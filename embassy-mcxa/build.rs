@@ -55,6 +55,7 @@ fn main() {
         generate_spi_pin_impls(),
         generate_ctimer_pin_impls(),
         generate_lpuart_pin_impls(),
+        generate_flexspi_pin_impls(),
     ];
 
     let out_dir = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
@@ -198,7 +199,7 @@ fn generate_instance_calls() -> TokenStream {
     let mut generated = TokenStream::new();
 
     const REQUIRES_INSTANCE: &[&str] = &[
-        "adc", "crc", "gpio", "trng", "wwdt", "ctimer", "lpi2c", "i3c", "lpuart", "lpspi",
+        "adc", "crc", "gpio", "trng", "wwdt", "ctimer", "lpi2c", "i3c", "lpuart", "lpspi", "flexspi",
     ];
 
     let peripheral_regex = Regex::new(r"(^.*\D)(\d+)?").unwrap();
@@ -378,6 +379,33 @@ fn generate_spi_pin_impls() -> TokenStream {
                 generated.extend(quote! {
                     #feature_gate
                     crate::impl_spi_pin!(#pin_name, #spi_name, #mux, #signal_pin);
+                });
+            }
+        }
+    }
+
+    generated
+}
+
+fn generate_flexspi_pin_impls() -> TokenStream {
+    let mut generated = TokenStream::new();
+
+    let flexspi_regex = Regex::new(r"^FLEXSPI\d+").unwrap();
+    for flexspi in METADATA.peripherals.iter().filter(|p| flexspi_regex.is_match(p.name)) {
+        let flexspi_name = format_ident!("{}", flexspi.name);
+
+        let mut emitted_pins = std::collections::HashSet::new();
+        for signal in flexspi.signals {
+            for pin in signal.pins {
+                if !emitted_pins.insert(pin.pin) {
+                    continue;
+                }
+                let pin_name = format_ident!("{}", pin.pin);
+                let feature_gate = pin_feature_gate(pin.pin);
+
+                generated.extend(quote! {
+                    #feature_gate
+                    crate::impl_flexspi_pin!(#pin_name, #flexspi_name);
                 });
             }
         }
