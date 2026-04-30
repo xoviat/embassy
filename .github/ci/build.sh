@@ -19,19 +19,4 @@ fi
 # used when pointing stm32-metapac to a CI-built one.
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
 
-# Restore lockfiles
-if [ -f /ci/cache/lockfiles.tar ]; then
-    echo Restoring lockfiles...
-    tar xf /ci/cache/lockfiles.tar
-fi
-
-hashtime restore /ci/cache/filetime.json || true
-hashtime save /ci/cache/filetime.json
-
-cargo install --git https://github.com/embassy-rs/cargo-embassy-devtool --locked --rev 7d6d61819cb5a54bd6fe7da88359c7949142932a
-
-./ci.sh
-
-# Save lockfiles
-echo Saving lockfiles...
-find . -type f -name Cargo.lock -exec tar -cf /ci/cache/lockfiles.tar '{}' \+
+hashtime --version
