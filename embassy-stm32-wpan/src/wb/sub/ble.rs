@@ -1,6 +1,8 @@
 #[cfg(feature = "bt-hci")]
 use core::cell::RefCell;
 use core::ptr;
+#[cfg(feature = "bt-hci")]
+use core::sync::atomic::AtomicBool;
 
 use embassy_stm32::ipcc::{IpccRxChannel, IpccTxChannel};
 #[cfg(feature = "bt-hci")]
@@ -318,6 +320,7 @@ pub struct AtomicController<'d> {
     ipcc_hci_acl_rx_data_channel: Mutex<NoopRawMutex, IpccRxChannel<'d>>,
     slots: blocking_mutex::NoopMutex<RefCell<[Option<bt_hci::cmd::Opcode>; SLOTS]>>,
     signals: [Signal<NoopRawMutex, Option<EvtBox<Ble<'d>>>>; SLOTS],
+    acl_pending: AtomicBool,
 }
 
 #[cfg(feature = "bt-hci")]
@@ -330,6 +333,7 @@ impl<'d> AtomicController<'d> {
             ipcc_hci_acl_rx_data_channel: Mutex::new(controller.ipcc_hci_acl_rx_data_channel),
             slots: blocking_mutex::NoopMutex::const_new(NoopRawMutex::new(), RefCell::new([None; SLOTS])),
             signals: [Signal::new(), Signal::new(), Signal::new()],
+            acl_pending: AtomicBool::new(false),
         }
     }
 
@@ -385,6 +389,7 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
         use bt_hci::cmd::controller_baseband::Reset;
         use bt_hci::event::{CommandComplete, CommandCompleteWithStatus, CommandStatus, EventKind};
         use bt_hci::{ControllerToHostPacket, FromHciBytes};
+        use core::sync::atomic::Ordering;
         use embassy_futures::select::{Either, select};
 
         let signal_cmd = |opcode: bt_hci::cmd::Opcode, evt: EvtBox<Ble<'d>>| {
@@ -478,11 +483,22 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
                     // This entire block is unsafe because we must copy out the event immediately so that it is not
                     // trashed by a pending command.
 
+                    // When combined with the `close` flag, the expected behavior is that this will only receive
+                    // data while the future is active.
                     let evt: EvtBox<Ble<'d>> = self
                         .ipcc_hci_acl_rx_data_channel
                         .lock()
                         .await
-                        .receive(|| Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _)), true)
+                        .receive(
+                            || {
+                                if !self.acl_pending.fetch_not(Ordering::AcqRel) {
+                                    None
+                                } else {
+                                    Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
+                                }
+                            },
+                            true,
+                        )
                         .await;
 
                     make_pkt(buf2, evt)
