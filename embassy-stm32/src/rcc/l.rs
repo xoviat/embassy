@@ -185,7 +185,6 @@ pub(crate) unsafe fn init(config: Config) {
     #[cfg(stm32wl)]
     {
         // Set max latency
-        FLASH.acr().modify(|w| w.set_prften(true));
         FLASH.acr().modify(|w| w.set_latency(2));
     }
 
@@ -383,10 +382,13 @@ pub(crate) unsafe fn init(config: Config) {
 
     #[cfg(stm32l1)]
     FLASH.acr().write(|w| w.set_acc64(true));
-    #[cfg(not(stm32l5))]
-    FLASH.acr().modify(|w| w.set_prften(true));
+
     FLASH.acr().modify(|w| w.set_latency(latency));
     while FLASH.acr().read().latency() != latency {}
+
+    // enable prefetch (prft) after switching latency
+    #[cfg(not(stm32l5))]
+    FLASH.acr().modify(|w| w.set_prften(true));
 
     RCC.cfgr().modify(|w| {
         w.set_sw(config.sys);
