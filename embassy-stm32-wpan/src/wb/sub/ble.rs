@@ -314,8 +314,8 @@ const SLOTS: usize = 3;
 pub struct AtomicController<'d> {
     hw_ipcc_ble_cmd_channel: Mutex<NoopRawMutex, IpccTxChannel<'d>>,
     ipcc_ble_event_channel: Mutex<NoopRawMutex, IpccRxChannel<'d>>,
-    _ipcc_hci_acl_tx_data_channel: Mutex<NoopRawMutex, IpccTxChannel<'d>>,
-    _ipcc_hci_acl_rx_data_channel: Mutex<NoopRawMutex, IpccRxChannel<'d>>,
+    ipcc_hci_acl_tx_data_channel: Mutex<NoopRawMutex, IpccTxChannel<'d>>,
+    ipcc_hci_acl_rx_data_channel: Mutex<NoopRawMutex, IpccRxChannel<'d>>,
     slots: blocking_mutex::NoopMutex<RefCell<[Option<bt_hci::cmd::Opcode>; SLOTS]>>,
     signals: [Signal<NoopRawMutex, Option<EvtBox<Ble<'d>>>>; SLOTS],
 }
@@ -326,8 +326,8 @@ impl<'d> AtomicController<'d> {
         Self {
             hw_ipcc_ble_cmd_channel: Mutex::new(controller.hw_ipcc_ble_cmd_channel),
             ipcc_ble_event_channel: Mutex::new(controller.ipcc_ble_event_channel),
-            _ipcc_hci_acl_tx_data_channel: Mutex::new(controller.ipcc_hci_acl_tx_data_channel),
-            _ipcc_hci_acl_rx_data_channel: Mutex::new(controller.ipcc_hci_acl_rx_data_channel),
+            ipcc_hci_acl_tx_data_channel: Mutex::new(controller.ipcc_hci_acl_tx_data_channel),
+            ipcc_hci_acl_rx_data_channel: Mutex::new(controller.ipcc_hci_acl_rx_data_channel),
             slots: blocking_mutex::NoopMutex::const_new(NoopRawMutex::new(), RefCell::new([None; SLOTS])),
             signals: [Signal::new(), Signal::new(), Signal::new()],
         }
@@ -356,8 +356,20 @@ impl<'d> embedded_io::ErrorType for AtomicController<'d> {
 
 #[cfg(feature = "bt-hci")]
 impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
-    async fn write_acl_data(&self, _packet: &bt_hci::data::AclPacket<'_>) -> Result<(), Self::Error> {
-        todo!()
+    async fn write_acl_data(&self, packet: &bt_hci::data::AclPacket<'_>) -> Result<(), Self::Error> {
+        use bt_hci::WriteHci;
+        use bt_hci::transport::WithIndicator;
+
+        self.ipcc_hci_acl_tx_data_channel
+            .lock()
+            .await
+            .send_exclusive(|| unsafe {
+                WithIndicator::new(packet)
+                    .write_hci(CmdPacket::writer(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
+                    .map_err(|_| ERR0)
+            })
+            .await
+            .map_err(|_| ERR1)
     }
 
     async fn write_iso_data(&self, _packet: &bt_hci::data::IsoPacket<'_>) -> Result<(), Self::Error> {
@@ -373,6 +385,7 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
         use bt_hci::cmd::controller_baseband::Reset;
         use bt_hci::event::{CommandComplete, CommandCompleteWithStatus, CommandStatus, EventKind};
         use bt_hci::{ControllerToHostPacket, FromHciBytes};
+        use embassy_futures::select::{Either, select};
 
         let signal_cmd = |opcode: bt_hci::cmd::Opcode, evt: EvtBox<Ble<'d>>| {
             let slots = self.slots.borrow().borrow_mut();
@@ -406,56 +419,80 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
                 Ok(pkt)
             };
 
-        loop {
-            {
-                let evt: EvtBox<Ble<'d>> = self
-                    .ipcc_ble_event_channel
-                    .lock()
-                    .await
-                    .receive(
-                        || unsafe {
-                            if let Some(node_ptr) =
-                                critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                            {
-                                Some(EvtBox::new(node_ptr.cast()))
-                            } else {
-                                None
+        // SAFETY: buf is written and returned in both branches
+        let buf2 = unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.len()) };
+        match select(
+            async {
+                loop {
+                    let evt: EvtBox<Ble<'d>> = self
+                        .ipcc_ble_event_channel
+                        .lock()
+                        .await
+                        .receive(
+                            || unsafe {
+                                if let Some(node_ptr) =
+                                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                                {
+                                    Some(EvtBox::new(node_ptr.cast()))
+                                } else {
+                                    None
+                                }
+                            },
+                            false,
+                        )
+                        .await;
+
+                    let (pkt, _) = ControllerToHostPacket::from_hci_bytes(&evt.serial()).map_err(|_| ERR1)?;
+
+                    match pkt {
+                        ControllerToHostPacket::Event(ref event) => match event.kind {
+                            EventKind::CommandComplete => {
+                                let e = CommandComplete::from_hci_bytes_complete(event.data).map_err(|_| ERR1)?;
+                                if !e.has_status() {
+                                    return make_pkt(buf, evt);
+                                }
+                                let e: CommandCompleteWithStatus =
+                                    e.try_into().map_err(|_| embedded_io::ErrorKind::InvalidData)?;
+
+                                signal_cmd(e.cmd_opcode, evt);
+                                continue;
                             }
-                        },
-                        false,
-                    )
-                    .await;
+                            EventKind::CommandStatus => {
+                                let e = CommandStatus::from_hci_bytes_complete(event.data).map_err(|_| ERR1)?;
 
-                let (pkt, _) = ControllerToHostPacket::from_hci_bytes(&evt.serial()).map_err(|_| ERR1)?;
-
-                match pkt {
-                    ControllerToHostPacket::Event(ref event) => match event.kind {
-                        EventKind::CommandComplete => {
-                            let e = CommandComplete::from_hci_bytes_complete(event.data).map_err(|_| ERR1)?;
-                            if !e.has_status() {
+                                signal_cmd(e.cmd_opcode, evt);
+                                continue;
+                            }
+                            _ => {
                                 return make_pkt(buf, evt);
                             }
-                            let e: CommandCompleteWithStatus =
-                                e.try_into().map_err(|_| embedded_io::ErrorKind::InvalidData)?;
-
-                            signal_cmd(e.cmd_opcode, evt);
-                            continue;
-                        }
-                        EventKind::CommandStatus => {
-                            let e = CommandStatus::from_hci_bytes_complete(event.data).map_err(|_| ERR1)?;
-
-                            signal_cmd(e.cmd_opcode, evt);
-                            continue;
-                        }
+                        },
                         _ => {
                             return make_pkt(buf, evt);
                         }
-                    },
-                    _ => {
-                        return make_pkt(buf, evt);
                     }
                 }
-            }
+            },
+            async {
+                unsafe {
+                    // This entire block is unsafe because we must copy out the event immediately so that it is not
+                    // trashed by a pending command.
+
+                    let evt: EvtBox<Ble<'d>> = self
+                        .ipcc_hci_acl_rx_data_channel
+                        .lock()
+                        .await
+                        .receive(|| Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _)), true)
+                        .await;
+
+                    make_pkt(buf2, evt)
+                }
+            },
+        )
+        .await
+        {
+            Either::First(ret) => ret,
+            Either::Second(ret) => ret,
         }
     }
 }
