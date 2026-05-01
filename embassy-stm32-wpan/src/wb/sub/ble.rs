@@ -385,11 +385,12 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
     }
 
     async fn read<'a>(&self, buf: &'a mut [u8]) -> Result<bt_hci::ControllerToHostPacket<'a>, Self::Error> {
+        use core::sync::atomic::Ordering;
+
         use bt_hci::cmd::Cmd;
         use bt_hci::cmd::controller_baseband::Reset;
         use bt_hci::event::{CommandComplete, CommandCompleteWithStatus, CommandStatus, EventKind};
         use bt_hci::{ControllerToHostPacket, FromHciBytes};
-        use core::sync::atomic::Ordering;
         use embassy_futures::select::{Either, select};
 
         let signal_cmd = |opcode: bt_hci::cmd::Opcode, evt: EvtBox<Ble<'d>>| {
