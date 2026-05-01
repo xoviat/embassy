@@ -83,9 +83,9 @@ async fn main(_spawner: Spawner) {
         // VCO = 16MHz * 12 = 192MHz, PLLR = 192 / 2 = 96MHz system clock
         config.rcc.pll1 = Some(Pll {
             source: PllSource::Hse,
-            prediv: PllPreDiv::Div2,   // 32MHz / 2 = 16MHz to PLL input
-            mul: PllMul::Mul12,        // 16MHz * 12 = 192MHz VCO
-            divr: Some(PllDiv::Div2),  // 192MHz / 2 = 96MHz system clock
+            prediv: PllPreDiv::Div2,  // 32MHz / 2 = 16MHz to PLL input
+            mul: PllMul::Mul12,       // 16MHz * 12 = 192MHz VCO
+            divr: Some(PllDiv::Div2), // 192MHz / 2 = 96MHz system clock
             divq: None,
             divp: Some(PllDiv::Div12), // 192MHz / 12 = 16MHz for peripherals
             frac: Some(0),
@@ -106,7 +106,7 @@ async fn main(_spawner: Spawner) {
     {
         use embassy_stm32::pac::RCC;
         use embassy_stm32::pac::rcc::vals::Radiostsel;
-        // WBA65 trim value, not needed on 55
+        // WBA65 requires HSE trimming for accurate radio frequency
         RCC.ecscr1().modify(|w| w.set_hsetrim(0x0C));
         RCC.bdcr().modify(|w| w.set_radiostsel(Radiostsel::Lse));
     }
