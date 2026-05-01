@@ -1,6 +1,3 @@
-// This must go FIRST so that all the other modules see its macros.
-mod fmt;
-
 use core::future::poll_fn;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
@@ -45,11 +42,13 @@ use crate::sub::mac::Mac;
 
 type PacketHeader = LinkedListNode;
 
+#[allow(unused)]
 struct Flag {
     state: AtomicBool,
     waker: AtomicWaker,
 }
 
+#[allow(unused)]
 impl Flag {
     pub const fn new(state: bool) -> Self {
         Self {
@@ -70,7 +69,6 @@ impl Flag {
         }
     }
 
-    #[allow(unused)]
     pub async fn wait_for_high(&self) {
         poll_fn(|cx| {
             self.waker.register(cx.waker());
