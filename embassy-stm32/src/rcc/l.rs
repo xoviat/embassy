@@ -386,7 +386,7 @@ pub(crate) unsafe fn init(config: Config) {
     FLASH.acr().modify(|w| w.set_latency(latency));
     while FLASH.acr().read().latency() != latency {}
 
-    // enable prft after switching latency
+    // enable prefetch (prft) after switching latency
     #[cfg(not(stm32l5))]
     FLASH.acr().modify(|w| w.set_prften(true));
 
