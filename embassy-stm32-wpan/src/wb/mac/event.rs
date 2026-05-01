@@ -1,4 +1,4 @@
-use core::{mem, ptr};
+use core::mem;
 
 use super::indications::{
     AssociateIndication, BeaconNotifyIndication, CommStatusIndication, DataIndication, DisassociateIndication,
@@ -8,9 +8,10 @@ use super::responses::{
     AssociateConfirm, CalibrateConfirm, DataConfirm, DisassociateConfirm, DpsConfirm, GetConfirm, GtsConfirm,
     PollConfirm, PurgeConfirm, ResetConfirm, RxEnableConfirm, ScanConfirm, SetConfirm, SoundingConfirm, StartConfirm,
 };
-use crate::evt::{EvtBox, MemoryManager};
+use crate::evt::EvtBox;
 use crate::mac::opcodes::OpcodeM0ToM4;
-use crate::sub::mac::{self, MacRx};
+use crate::sub::mac::drop_mac_event;
+use crate::sub::mm;
 
 pub(crate) trait ParseableMacEvent: Sized {
     fn from_buffer<'a>(buf: &'a [u8]) -> Result<&'a Self, ()> {
@@ -53,7 +54,7 @@ pub enum MacEvent<'a> {
 }
 
 impl<'a> MacEvent<'a> {
-    pub(crate) fn new(event_box: EvtBox<MacRx>) -> Result<Self, ()> {
+    pub(crate) fn new(event_box: EvtBox<mm::MemoryManager>) -> Result<Self, ()> {
         let payload = event_box.payload();
         let opcode = u16::from_le_bytes(payload[0..2].try_into().unwrap());
 
@@ -148,6 +149,8 @@ unsafe impl<'a> Send for MacEvent<'a> {}
 
 impl<'a> Drop for MacEvent<'a> {
     fn drop(&mut self) {
-        unsafe { mac::MacRx::drop_event_packet(ptr::null_mut()) };
+        unsafe {
+            drop_mac_event();
+        }
     }
 }

@@ -1,6 +1,8 @@
 use core::ptr;
 
 use embassy_stm32::ipcc::{IpccRxChannel, IpccTxChannel};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::{Mutex, MutexGuard};
 use hci::Opcode;
 
 use crate::cmd::CmdPacket;
@@ -10,6 +12,15 @@ use crate::evt::{EvtBox, EvtPacket, EvtStub};
 use crate::sub::mm;
 use crate::tables::{BLE_CMD_BUFFER, BleTable, CS_BUFFER, EVT_QUEUE, HCI_ACL_DATA_BUFFER, TL_BLE_TABLE};
 use crate::unsafe_linked_list::LinkedListNode;
+use crate::wb::Flag;
+
+static ACL_EVT_OUT: Flag = Flag::new(false);
+static ACL_MUTEX: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
+
+async fn lock_acl() -> MutexGuard<'static, CriticalSectionRawMutex, ()> {
+    ACL_EVT_OUT.wait_for_low().await;
+    ACL_MUTEX.lock().await
+}
 
 /// A guard that, once constructed, may be used to send BLE commands to CPU2.
 ///
@@ -39,18 +50,20 @@ use crate::unsafe_linked_list::LinkedListNode;
 pub struct Ble<'a> {
     hw_ipcc_ble_cmd_channel: IpccTxChannel<'a>,
     ipcc_ble_event_channel: IpccRxChannel<'a>,
-    ipcc_hci_acl_data_channel: IpccTxChannel<'a>,
+    ipcc_hci_acl_tx_data_channel: IpccTxChannel<'a>,
+    ipcc_hci_acl_rx_data_channel: IpccRxChannel<'a>,
 }
 
 /// BLE for only sending commands to CPU2
 pub struct BleTx<'a> {
     hw_ipcc_ble_cmd_channel: IpccTxChannel<'a>,
-    ipcc_hci_acl_data_channel: IpccTxChannel<'a>,
+    ipcc_hci_acl_tx_data_channel: IpccTxChannel<'a>,
 }
 
 /// BLE for only receive commands from CPU2
 pub struct BleRx<'a> {
     ipcc_ble_event_channel: IpccRxChannel<'a>,
+    ipcc_hci_acl_rx_data_channel: IpccRxChannel<'a>,
 }
 
 impl<'a> Ble<'a> {
@@ -60,7 +73,8 @@ impl<'a> Ble<'a> {
     pub(crate) fn new(
         hw_ipcc_ble_cmd_channel: IpccTxChannel<'a>,
         ipcc_ble_event_channel: IpccRxChannel<'a>,
-        ipcc_hci_acl_data_channel: IpccTxChannel<'a>,
+        ipcc_hci_acl_tx_data_channel: IpccTxChannel<'a>,
+        ipcc_hci_acl_rx_data_channel: IpccRxChannel<'a>,
     ) -> Self {
         unsafe {
             LinkedListNode::init_head(EVT_QUEUE.as_mut_ptr());
@@ -76,7 +90,8 @@ impl<'a> Ble<'a> {
         Self {
             hw_ipcc_ble_cmd_channel,
             ipcc_ble_event_channel,
-            ipcc_hci_acl_data_channel,
+            ipcc_hci_acl_tx_data_channel,
+            ipcc_hci_acl_rx_data_channel,
         }
     }
 
@@ -85,10 +100,11 @@ impl<'a> Ble<'a> {
         (
             BleTx {
                 hw_ipcc_ble_cmd_channel: self.hw_ipcc_ble_cmd_channel,
-                ipcc_hci_acl_data_channel: self.ipcc_hci_acl_data_channel,
+                ipcc_hci_acl_tx_data_channel: self.ipcc_hci_acl_tx_data_channel,
             },
             BleRx {
                 ipcc_ble_event_channel: self.ipcc_ble_event_channel,
+                ipcc_hci_acl_rx_data_channel: self.ipcc_hci_acl_rx_data_channel,
             },
         )
     }
@@ -122,7 +138,9 @@ impl<'a> Ble<'a> {
 
     /// `TL_BLE_SendAclData`
     pub async fn acl_write(&mut self, handle: u16, payload: &[u8]) {
-        self.ipcc_hci_acl_data_channel
+        let _guard = lock_acl().await;
+
+        self.ipcc_hci_acl_tx_data_channel
             .send(|| unsafe {
                 CmdPacket::write_into(
                     HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _,
@@ -133,11 +151,35 @@ impl<'a> Ble<'a> {
             })
             .await;
     }
+
+    /// `TL_BLE_AclNot`
+    pub async fn acl_read(&mut self) -> EvtBox<Self> {
+        let _guard = lock_acl().await;
+
+        self.ipcc_hci_acl_rx_data_channel
+            .receive(
+                || unsafe {
+                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
+                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
+                    ACL_EVT_OUT.set_high();
+
+                    Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
+                },
+                true,
+            )
+            .await
+    }
 }
 
 impl<'a> evt::MemoryManager for Ble<'a> {
     /// SAFETY: passing a pointer to something other than a managed event packet is UB
     unsafe fn drop_event_packet(evt: *mut EvtPacket) {
+        if ptr::eq(evt, HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _) {
+            ACL_EVT_OUT.set_low();
+
+            return;
+        }
+
         let stub = unsafe {
             let p_evt_stub = &(*evt).evt_serial as *const _ as *const EvtStub;
 
@@ -177,7 +219,7 @@ impl<'a> BleTx<'a> {
 
     /// `TL_BLE_SendAclData`
     pub async fn acl_write(&mut self, handle: u16, payload: &[u8]) {
-        self.ipcc_hci_acl_data_channel
+        self.ipcc_hci_acl_tx_data_channel
             .send(|| unsafe {
                 CmdPacket::write_into(
                     HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _,
@@ -192,7 +234,7 @@ impl<'a> BleTx<'a> {
 
 impl<'a> BleRx<'a> {
     /// `HW_IPCC_BLE_EvtNot`
-    pub async fn tl_read(&mut self) -> EvtBox<Self> {
+    pub async fn tl_read(&mut self) -> EvtBox<Ble<'a>> {
         self.ipcc_ble_event_channel
             .receive(
                 || unsafe {
@@ -208,20 +250,23 @@ impl<'a> BleRx<'a> {
             )
             .await
     }
-}
 
-impl<'a> evt::MemoryManager for BleRx<'a> {
-    /// SAFETY: passing a pointer to something other than a managed event packet is UB
-    unsafe fn drop_event_packet(evt: *mut EvtPacket) {
-        // Reuse the logic from the original BLE implementation
-        let stub = unsafe {
-            let p_evt_stub = &(*evt).evt_serial as *const _ as *const EvtStub;
-            ptr::read_volatile(p_evt_stub)
-        };
+    /// `TL_BLE_AclNot`
+    pub async fn acl_read(&mut self) -> EvtBox<Ble<'a>> {
+        let _guard = lock_acl().await;
 
-        if !(stub.evt_code == TL_BLEEVT_CS_OPCODE || stub.evt_code == TL_BLEEVT_CC_OPCODE) {
-            mm::MemoryManager::drop_event_packet(evt);
-        }
+        self.ipcc_hci_acl_rx_data_channel
+            .receive(
+                || unsafe {
+                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
+                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
+                    ACL_EVT_OUT.set_high();
+
+                    Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
+                },
+                true,
+            )
+            .await
     }
 }
 

@@ -1,8 +1,10 @@
 // This must go FIRST so that all the other modules see its macros.
 mod fmt;
 
+use core::future::poll_fn;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{Ordering, compiler_fence};
+use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
+use core::task::Poll;
 
 #[cfg(any(feature = "wb-ble", feature = "wb-mac"))]
 use embassy_futures::select::{Either, select};
@@ -10,6 +12,7 @@ use embassy_hal_internal::Peri;
 use embassy_stm32::interrupt;
 use embassy_stm32::ipcc::{Config, Ipcc, IpccRxChannel, ReceiveInterruptHandler, TransmitInterruptHandler};
 use embassy_stm32::peripherals::IPCC;
+use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::{Duration, with_timeout};
 use sub::mm::MemoryManager;
 use sub::sys::Sys;
@@ -41,6 +44,59 @@ pub use crate::sub::ble::hci;
 use crate::sub::mac::Mac;
 
 type PacketHeader = LinkedListNode;
+
+struct Flag {
+    state: AtomicBool,
+    waker: AtomicWaker,
+}
+
+impl Flag {
+    pub const fn new(state: bool) -> Self {
+        Self {
+            state: AtomicBool::new(state),
+            waker: AtomicWaker::new(),
+        }
+    }
+
+    pub fn set_high(&self) {
+        if !self.state.swap(true, Ordering::AcqRel) {
+            self.waker.wake();
+        }
+    }
+
+    pub fn set_low(&self) {
+        if self.state.swap(false, Ordering::AcqRel) {
+            self.waker.wake();
+        }
+    }
+
+    #[allow(unused)]
+    pub async fn wait_for_high(&self) {
+        poll_fn(|cx| {
+            self.waker.register(cx.waker());
+
+            if !self.state.load(Ordering::Acquire) {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+    }
+
+    pub async fn wait_for_low(&self) {
+        poll_fn(|cx| {
+            self.waker.register(cx.waker());
+
+            if self.state.load(Ordering::Acquire) {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+    }
+}
 
 /// Transport Layer for the Mailbox interface
 pub struct TlMbox<'d> {
@@ -181,7 +237,7 @@ impl<'d> TlMbox<'d> {
             (_ipcc_mac_802_15_4_cmd_rsp_channel, _ipcc_mac_802_15_4_notification_ack_channel),
             (ipcc_mm_release_buffer_channel, _ipcc_traces_channel),
             (_ipcc_ble_lld_cmd_channel, _ipcc_ble_lld_rsp_channel),
-            (_ipcc_hci_acl_data_channel, _),
+            (_ipcc_hci_acl_tx_data_channel, _ipcc_hci_acl_rx_data_channel),
         ] = Ipcc::new(ipcc, _irqs, config).split();
 
         let mm = sub::mm::MemoryManager::new(ipcc_mm_release_buffer_channel);
@@ -193,7 +249,8 @@ impl<'d> TlMbox<'d> {
             ble_subsystem: sub::ble::Ble::new(
                 _hw_ipcc_ble_cmd_channel,
                 _ipcc_ble_event_channel,
-                _ipcc_hci_acl_data_channel,
+                _ipcc_hci_acl_tx_data_channel,
+                _ipcc_hci_acl_rx_data_channel,
             ),
             #[cfg(feature = "wb-mac")]
             mac_subsystem: sub::mac::Mac::new(

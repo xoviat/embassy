@@ -1,24 +1,19 @@
-use core::future::poll_fn;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::task::Poll;
 
 use embassy_futures::poll_once;
 use embassy_stm32::ipcc::{Ipcc, IpccRxChannel, IpccTxChannel};
-use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::cmd::CmdPacket;
 use crate::consts::TlPacketType;
-use crate::evt;
 use crate::evt::{EvtBox, EvtPacket};
 use crate::mac::commands::MacCommand;
 use crate::mac::event::MacEvent;
 use crate::mac::typedefs::MacError;
 use crate::tables::{MAC_802_15_4_CMD_BUFFER, MAC_802_15_4_NOTIF_RSP_EVT_BUFFER};
 use crate::unsafe_linked_list::LinkedListNode;
+use crate::wb::Flag;
 
-static MAC_WAKER: AtomicWaker = AtomicWaker::new();
-static MAC_EVT_OUT: AtomicBool = AtomicBool::new(false);
+static MAC_EVT_OUT: Flag = Flag::new(false);
 
 pub struct Mac<'a> {
     ipcc_mac_802_15_4_cmd_rsp_channel: IpccTxChannel<'a>,
@@ -121,17 +116,9 @@ impl<'a> MacRx<'a> {
     /// `HW_IPCC_MAC_802_15_4_EvtNot`
     ///
     /// This function will stall if the previous `EvtBox` has not been dropped
-    pub async fn tl_read(&mut self) -> EvtBox<MacRx<'a>> {
+    pub async fn read(&mut self) -> Result<MacEvent<'a>, ()> {
         // Wait for the last event box to be dropped
-        poll_fn(|cx| {
-            MAC_WAKER.register(cx.waker());
-            if MAC_EVT_OUT.load(Ordering::Acquire) {
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
-        })
-        .await;
+        MAC_EVT_OUT.wait_for_low().await;
 
         // Return a new event box
         self.ipcc_mac_802_15_4_notification_ack_channel
@@ -139,38 +126,33 @@ impl<'a> MacRx<'a> {
                 || unsafe {
                     // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
                     // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
-                    MAC_EVT_OUT.store(true, Ordering::SeqCst);
+                    MAC_EVT_OUT.set_high();
 
-                    Some(EvtBox::new(MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _))
+                    Some(MacEvent::new(EvtBox::new(
+                        MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
+                    )))
                 },
                 true,
             )
             .await
     }
-
-    pub async fn read<'b>(&mut self) -> Result<MacEvent<'b>, ()> {
-        MacEvent::new(self.tl_read().await)
-    }
 }
 
-impl<'a> evt::MemoryManager for MacRx<'a> {
-    /// SAFETY: passing a pointer to something other than a managed event packet is UB
-    unsafe fn drop_event_packet(_: *mut EvtPacket) {
-        trace!("mac drop event");
+/// SAFETY: passing a pointer to something other than a managed event packet is UB
+pub(crate) unsafe fn drop_mac_event() {
+    trace!("mac drop event");
 
-        // Write the ack
-        CmdPacket::write_into(
-            MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
-            TlPacketType::OtAck,
-            0,
-            &[],
-        );
+    // Write the ack
+    CmdPacket::write_into(
+        MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
+        TlPacketType::OtAck,
+        0,
+        &[],
+    );
 
-        // Clear the rx flag
-        let _ = poll_once(Ipcc::receive::<()>(3, || None, false));
+    // Clear the rx flag
+    let _ = poll_once(Ipcc::receive::<()>(3, || None, false));
 
-        // Allow a new read call
-        MAC_EVT_OUT.store(false, Ordering::Release);
-        MAC_WAKER.wake();
-    }
+    // Allow a new read call
+    MAC_EVT_OUT.set_low();
 }
