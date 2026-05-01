@@ -167,6 +167,55 @@ impl<'a> IpccTxChannel<'a> {
         }
     }
 
+    /// Send data to an IPCC channel, but wait until the corresponding rx channel is read
+    /// before writing any data inside of the closure. The closure is called to write
+    /// the data when appropriate.
+    pub async fn send_exclusive<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        let regs = IPCC::regs();
+        let core = CoreId::current();
+
+        // Wait for the tx channel to become clear
+        self.flush().await;
+
+        // Wait for the rx channel to become clear
+        if regs
+            .cpu(core.other().to_index().into())
+            .sr()
+            .read()
+            .chf(self.index as usize)
+        {
+            trace!("ipcc: ch {}: wait for rx clear", self.index as u8);
+
+            poll_fn(|cx| {
+                IPCC::state().rx_waker_for(self.index).register(cx.waker());
+
+                compiler_fence(Ordering::SeqCst);
+
+                if !regs
+                    .cpu(core.other().to_index().into())
+                    .sr()
+                    .read()
+                    .chf(self.index as usize)
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+        }
+
+        let ret = f();
+        fence(Ordering::Release);
+
+        trace!("ipcc: ch {}: send data", self.index as u8);
+        regs.cpu(core.to_index().into())
+            .scr()
+            .write(|w| w.set_chs(self.index as usize, true));
+
+        ret
+    }
+
     /// Send data to an IPCC channel. The closure is called to write the data when appropriate.
     pub async fn send<R>(&mut self, f: impl FnOnce() -> R) -> R {
         let regs = IPCC::regs();
@@ -258,26 +307,6 @@ impl<'a> IpccRxChannel<'a> {
         }
     }
 
-    /// Try to receive data from an IPCC channel. The closure is called to read the data if appropriate or if close was setk.
-    ///
-    /// `close` determines whether the channel will be open for receiving more data, or not after calling this method.
-    pub fn try_receive<R>(&mut self, mut f: impl FnMut() -> Option<R>, close: bool) -> Option<R> {
-        let regs = IPCC::regs();
-        let core = CoreId::current();
-
-        let should_read = regs
-            .cpu(core.other().to_index().into())
-            .sr()
-            .read()
-            .chf(self.index as usize);
-
-        regs.cpu(core.other().to_index().into())
-            .scr()
-            .write(|w| w.set_chs(self.index as usize, close));
-
-        if should_read || close { f() } else { None }
-    }
-
     /// Receive data from an IPCC channel. The closure is called to read the data when appropriate.
     ///
     /// `close` determines whether the channel will be open for receiving more data, or not after data is read.
@@ -287,7 +316,6 @@ impl<'a> IpccRxChannel<'a> {
         let core = CoreId::current();
 
         loop {
-            // This is a race, but is nice for debugging
             if !regs
                 .cpu(core.other().to_index().into())
                 .sr()
