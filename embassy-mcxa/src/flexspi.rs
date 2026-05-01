@@ -1103,7 +1103,11 @@ impl<'d, T: Instance> InnerFlexSpi<'d, T> {
 
             let chunk_len = (8 * tx_watermark).min(data.len() - offset);
             for (index, chunk) in data[offset..offset + chunk_len].chunks(4).enumerate() {
-                let mut word = [0u8; 4];
+                // Pad the trailing partial word with 0xFF so that, for NOR
+                // flash program commands, any FIFO bytes the controller
+                // shifts out past `IDATSZ` are no-ops (a 0x00 pad would
+                // permanently zero the bits after the data).
+                let mut word = [0xFFu8; 4];
                 word[..chunk.len()].copy_from_slice(chunk);
                 self.regs.tfdr(index).write_value(Tfdr(u32::from_le_bytes(word)));
             }
@@ -1145,7 +1149,9 @@ impl<'d, T: Instance> InnerFlexSpi<'d, T> {
 
             let chunk_len = (8 * tx_watermark).min(data.len() - offset);
             for (index, chunk) in data[offset..offset + chunk_len].chunks(4).enumerate() {
-                let mut word = [0u8; 4];
+                // Pad the trailing partial word with 0xFF (see the blocking
+                // sibling above for why).
+                let mut word = [0xFFu8; 4];
                 word[..chunk.len()].copy_from_slice(chunk);
                 self.regs.tfdr(index).write_value(Tfdr(u32::from_le_bytes(word)));
             }
