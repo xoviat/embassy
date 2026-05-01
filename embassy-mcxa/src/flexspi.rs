@@ -660,14 +660,8 @@ impl<'d, T: Instance> InnerFlexSpi<'d, T> {
     }
 
     pub async fn read_vendor_id_async(&mut self) -> Result<u8, IoError> {
-        #[cfg(feature = "defmt")]
-        defmt::trace!("flexspi read-id async start");
-
         self.issue_ip_command_async(0, self.flash.read_id_seq as usize, 10, None)
             .await?;
-
-        #[cfg(feature = "defmt")]
-        defmt::trace!("flexspi read-id async complete");
 
         self.extract_vendor_id()
     }
@@ -689,7 +683,6 @@ impl<'d, T: Instance> InnerFlexSpi<'d, T> {
         self.write_enable()?;
         self.issue_ip_command(address, self.flash.erase_sector_seq as usize, 0, None)?;
         self.wait_bus_busy()?;
-        self.software_reset();
         Ok(())
     }
 
@@ -699,7 +692,6 @@ impl<'d, T: Instance> InnerFlexSpi<'d, T> {
             .await?;
         self.wait_bus_busy_async().await?;
 
-        self.software_reset();
         Ok(())
     }
 
@@ -740,7 +732,6 @@ impl<'d, T: Instance> InnerFlexSpi<'d, T> {
                 )
                 .await?;
                 self.words_to_bytes(&words[..word_len], &mut buffer[offset..offset + dma_chunk]);
-                self.software_reset();
                 offset += dma_chunk;
                 continue;
             }
@@ -768,7 +759,6 @@ impl<'d, T: Instance> InnerFlexSpi<'d, T> {
         self.issue_ip_write_command(address, self.flash.page_program_seq as usize, data)?;
 
         self.wait_bus_busy()?;
-        self.software_reset();
         Ok(())
     }
 
@@ -796,7 +786,6 @@ impl<'d, T: Instance> InnerFlexSpi<'d, T> {
         }
 
         self.wait_bus_busy_async().await?;
-        self.software_reset();
         Ok(())
     }
 
