@@ -1,3 +1,7 @@
+// This module is shared via `#[path]` between several flexspi-* example
+// binaries; each one only references a subset of the helpers below.
+#![allow(dead_code)]
+
 use embassy_mcxa::flexspi::lookup::opcodes::sdr::{CMD, DUMMY, MODE8, RADDR, READ, WRITE};
 use embassy_mcxa::flexspi::lookup::{Command, Instr, LookupTable, Pads, SequenceBuilder};
 use embassy_mcxa::flexspi::{DeviceCommand, FlashConfig};
