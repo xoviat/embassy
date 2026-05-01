@@ -32,12 +32,10 @@
 #![no_main]
 
 use defmt::{error, info};
-use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mcxa as hal;
 use embassy_mcxa::dma::{DmaChannel, InvalidParameters, TransferOptions};
 use embassy_mcxa::{Peri, peripherals};
-use panic_probe as _;
+use {defmt_rtt as _, embassy_mcxa as hal, panic_probe as _};
 
 const ITERATIONS: u32 = 10;
 
