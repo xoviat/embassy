@@ -750,7 +750,7 @@ impl<M: Mode> HCI<M> {
     /// raw events (e.g., for connection management).
     pub async fn read_event(&mut self) -> stm32wb_hci::Event {
         loop {
-            if let Ok(event) = self.controller.read_event().await {
+            if let Ok(stm32wb_hci::host::uart::Packet::Event(event)) = self.controller.read_event().await {
                 return event;
             }
         }

@@ -237,9 +237,9 @@ impl Controller {
         unsafe { &mut *ptr }
     }
 
-    pub async fn read_event(&mut self) -> Result<Event, event::Error> {
+    pub async fn read_event(&mut self) -> Result<stm32wb_hci::host::uart::Packet, event::Error> {
         if let Some(buf) = self.pop_buf() {
-            Event::new(Packet(&buf[1..]))
+            Ok(stm32wb_hci::host::uart::Packet::Event(Event::new(Packet(&buf[1..]))?))
         } else {
             let slot = self.receiver.receive().await;
             // Parse and queue the event for processing.
@@ -251,11 +251,11 @@ impl Controller {
                 &slot
             };
 
-            let event = Event::new(Packet(parse_data));
+            let event = stm32wb_hci::host::uart::Packet::Event(Event::new(Packet(parse_data))?);
 
             slot.receive_done();
 
-            event
+            Ok(event)
         }
     }
 }
