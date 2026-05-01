@@ -45,6 +45,16 @@ pub struct CmdPacket {
 }
 
 impl CmdPacket {
+    #[cfg(feature = "bt-hci")]
+    pub unsafe fn writer(cmd_buf: *mut CmdPacket) -> VolatileWriter {
+        let p_cmd_serial = (cmd_buf as *mut u8).add(size_of::<PacketHeader>());
+
+        VolatileWriter {
+            start: p_cmd_serial,
+            len: 255,
+        }
+    }
+
     pub unsafe fn write_into(cmd_buf: *mut CmdPacket, packet_type: TlPacketType, cmd_code: u16, payload: &[u8]) {
         let p_cmd_serial = (cmd_buf as *mut u8).add(size_of::<PacketHeader>());
         let p_payload = p_cmd_serial.add(size_of::<CmdSerialStub>());
@@ -105,5 +115,44 @@ impl AclDataPacket {
         ptr::copy_nonoverlapping(payload as *const _ as *const u8, p_payload, payload.len());
 
         compiler_fence(Ordering::Release);
+    }
+}
+
+#[cfg(feature = "bt-hci")]
+impl<'d> embedded_io::ErrorType for VolatileWriter {
+    type Error = embedded_io::ErrorKind;
+}
+
+#[cfg(feature = "bt-hci")]
+pub struct VolatileWriter {
+    start: *mut u8,
+    len: usize,
+}
+
+#[cfg(feature = "bt-hci")]
+impl embedded_io::Write for VolatileWriter {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        use embedded_io::ErrorKind;
+
+        if self.len == 0 {
+            return Err(ErrorKind::WriteZero);
+        }
+
+        unsafe {
+            let count = self.len.min(buf.len());
+
+            ptr::copy_nonoverlapping(buf as *const _ as *const u8, self.start, count);
+
+            self.start = self.start.add(count);
+            self.len -= count;
+
+            Ok(count)
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        compiler_fence(Ordering::Release);
+
+        Ok(())
     }
 }
