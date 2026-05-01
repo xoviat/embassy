@@ -21,7 +21,6 @@ use crate::bluetooth::gatt::server::init_gatt_layer;
 use crate::bluetooth::hci::command::CommandSender;
 use crate::bluetooth::hci::types::DtmPacketPayload;
 use crate::bluetooth::{gap, hci};
-use crate::controller::Controller;
 
 /// Main BLE interface
 ///
@@ -50,7 +49,6 @@ use crate::controller::Controller;
 /// }
 /// ```
 pub struct Ble {
-    controller: Controller,
     cmd_sender: CommandSender,
     connections: ConnectionManager<MAX_CONNECTIONS>,
     is_advertising: bool,
@@ -63,20 +61,20 @@ impl Ble {
     /// These are stored in statics so the BLE stack's `extern "C"` callbacks can access them.
     ///
     /// Note: You must call `init()` before using other BLE functionality.
-    pub async fn new(controller: Controller) -> Result<Self, BleError> {
-        let mut this = Self {
-            cmd_sender: CommandSender::new(),
-            connections: ConnectionManager::new(),
-            is_advertising: false,
-            controller,
-        };
-
-        this.init()?;
-
-        yield_now().await;
-
-        Ok(this)
-    }
+    //    pub async fn new(controller: Controller) -> Result<Self, BleError> {
+    //        let mut this = Self {
+    //            cmd_sender: CommandSender::new(),
+    //            connections: ConnectionManager::new(),
+    //            is_advertising: false,
+    //            controller,
+    //        };
+    //
+    //        this.init()?;
+    //
+    //        yield_now().await;
+    //
+    //        Ok(this)
+    //    }
 
     /// Initialize the BLE stack
     ///
@@ -230,18 +228,18 @@ impl Ble {
     /// Performs the minimum initialization required before issuing DTM commands
     /// (HCI_LE_Transmitter_Test, HCI_LE_Receiver_Test, HCI_LE_Test_End).
     /// Does not initialize GATT or GAP — those layers are not used in DTM.
-    pub fn new_dtm(controller: Controller) -> Result<Self, BleError> {
-        let mut this = Self {
-            cmd_sender: CommandSender::new(),
-            connections: ConnectionManager::new(),
-            is_advertising: false,
-            controller,
-        };
-
-        this.dtm_init()?;
-
-        Ok(this)
-    }
+    //    pub fn new_dtm(controller: Controller) -> Result<Self, BleError> {
+    //        let mut this = Self {
+    //            cmd_sender: CommandSender::new(),
+    //            connections: ConnectionManager::new(),
+    //            is_advertising: false,
+    //            controller,
+    //        };
+    //
+    //        this.dtm_init()?;
+    //
+    //        Ok(this)
+    //    }
 
     /// Initialize the BLE stack for Direct Test Mode (DTM) only.
     ///
@@ -668,9 +666,9 @@ impl Ble {
     /// raw events (e.g., for connection management).
     pub async fn read_event(&mut self) -> stm32wb_hci::Event {
         loop {
-            if let Ok(event) = self.controller.read_event().await {
-                return event;
-            }
+            //            if let Ok(event) = self.controller.read_event().await {
+            //                return event;
+            //            }
         }
     }
 }

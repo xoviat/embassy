@@ -1,23 +1,15 @@
 pub mod bindings;
 pub mod ble;
 pub mod context;
-pub mod error;
-pub mod gap;
-pub mod gap_init;
-pub mod gatt;
 pub mod hci;
 pub mod linklayer_plat;
 pub mod ll_sys;
 pub mod ll_sys_if;
-pub mod mac_sys_if;
 pub mod power_table;
 pub mod runner;
-pub mod security;
 pub mod util_seq;
 
 // Re-export main types
 pub use ble::{Ble, HighInterruptHandler, LowInterruptHandler, VersionInfo};
-pub use error::BleError;
-pub use gap_init::{GapInitParams, GapRole, IoCapability, PhyPrefs, SecurityParams};
 pub use linklayer_plat::set_nvm_base_address;
 pub use runner::ble_runner;

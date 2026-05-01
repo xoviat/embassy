@@ -6,10 +6,10 @@
 //! - Tracks active connections
 //! - Allows disconnection via button press (if available)
 //!
-//! Hardware: STM32WBA65 or compatible
+//! Hardware: STM32WBA52 or compatible
 //!
 //! To test:
-//! 1. Flash this example to your STM32WBA6 board
+//! 1. Flash this example to your STM32WBA board
 //! 2. Use a BLE scanner app (nRF Connect, LightBlue, etc.)
 //! 3. Connect to "Embassy-Peripheral"
 //! 4. Observe connection/disconnection events in logs
@@ -23,7 +23,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::aes::{self, Aes};
 use embassy_stm32::mode::Blocking;
-use embassy_stm32::peripherals::{AES, PKA, RNG};
+use embassy_stm32::peripherals::{AES as AesPeriph, PKA as PkaPeriph, RNG};
 use embassy_stm32::pka::{self, Pka};
 use embassy_stm32::rcc::{
     AHB5Prescaler, AHBPrescaler, APBPrescaler, Hse, HsePrescaler, LsConfig, LseConfig, LseDrive, LseMode, PllDiv,
@@ -32,23 +32,21 @@ use embassy_stm32::rcc::{
 use embassy_stm32::rng::{self, Rng};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{Config, bind_interrupts};
-use embassy_stm32_wpan::bluetooth::ble::Ble;
 use embassy_stm32_wpan::bluetooth::gap::{AdvData, AdvParams, AdvType, GapEvent};
 use embassy_stm32_wpan::bluetooth::gatt::{
     CharProperties, GattEventMask, GattServer, SecurityPermissions, ServiceType, Uuid,
 };
-use embassy_stm32_wpan::{ChannelPacket, Controller, HighInterruptHandler, LowInterruptHandler, ble_runner};
+use embassy_stm32_wpan::{Ble, HighInterruptHandler, LowInterruptHandler, ble_runner};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::zerocopy_channel;
 use static_cell::StaticCell;
 use stm32wb_hci::event::ConnectionRole;
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
-    RNG => rng::InterruptHandler<RNG>;
-    AES => aes::InterruptHandler<AES>;
-    PKA => pka::InterruptHandler<PKA>;
+    RNG => rng::InterruptHandler<embassy_stm32::peripherals::RNG>;
+    AES => aes::InterruptHandler<AesPeriph>;
+    PKA => pka::InterruptHandler<PkaPeriph>;
     RADIO => HighInterruptHandler;
     HASH => LowInterruptHandler;
 });
@@ -79,15 +77,14 @@ async fn main(spawner: Spawner) {
         }),
     };
 
-    // Configure PLL1 from HSE for system clock
-    // HSE = 32MHz (fixed for WBA), using prescaler DIV1 gives 32MHz to PLL
+    // Configure PLL1 (required on WBA)
     config.rcc.pll1 = Some(embassy_stm32::rcc::Pll {
-        source: PllSource::Hse,   // Use HSE as PLL source
-        prediv: PllPreDiv::Div2,  // 32MHz / 2 = 16MHz to PLL input (must be 4-16MHz)
-        mul: PllMul::Mul12,       // 16MHz * 12 = 192MHz VCO
-        divr: Some(PllDiv::Div2), // 192MHz / 2 = 96MHz system clock
+        source: PllSource::Hsi,
+        prediv: PllPreDiv::Div1,
+        mul: PllMul::Mul30,
+        divr: Some(PllDiv::Div5),
         divq: None,
-        divp: Some(PllDiv::Div12), // 192MHz / 12 = 16MHz for peripherals
+        divp: Some(PllDiv::Div30),
         frac: Some(0),
     });
 
@@ -98,29 +95,28 @@ async fn main(spawner: Spawner) {
     config.rcc.ahb5_pre = AHB5Prescaler::Div4;
     config.rcc.voltage_scale = VoltageScale::Range1;
     config.rcc.sys = Sysclk::Pll1R;
-    config.rcc.mux.rngsel = mux::Rngsel::Hsi; // RNG can still use HSI
+    config.rcc.mux.rngsel = mux::Rngsel::Hsi;
 
     let p = embassy_stm32::init(config);
-    info!("Embassy STM32WBA6 BLE Peripheral Connection Example");
 
-    // Apply HSE trimming for accurate radio frequency (matching ST's Config_HSE)
-    // and configure radio sleep timer to use LSE
+    // Configure radio sleep timer to use LSE
     {
         use embassy_stm32::pac::RCC;
         use embassy_stm32::pac::rcc::vals::Radiostsel;
-        RCC.ecscr1().modify(|w| w.set_hsetrim(0x0C));
         RCC.bdcr().modify(|w| w.set_radiostsel(Radiostsel::Lse));
     }
+
+    info!("Embassy STM32WBA BLE Peripheral Connection Example");
 
     // Initialize hardware peripherals required by BLE stack
     static RNG_INST: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<Rng<'static, RNG>>>> = StaticCell::new();
     let rng = RNG_INST.init(Mutex::new(RefCell::new(Rng::new(p.RNG, Irqs))));
 
-    static AES_INST: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<Aes<'static, AES, Blocking>>>> =
+    static AES_INST: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<Aes<'static, AesPeriph, Blocking>>>> =
         StaticCell::new();
     let aes = AES_INST.init(Mutex::new(RefCell::new(Aes::new_blocking(p.AES, Irqs))));
 
-    static PKA_INST: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<Pka<'static, PKA>>>> = StaticCell::new();
+    static PKA_INST: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<Pka<'static, PkaPeriph>>>> = StaticCell::new();
     let pka = PKA_INST.init(Mutex::new(RefCell::new(Pka::new_blocking(p.PKA, Irqs))));
 
     info!("Hardware peripherals initialized (RNG, AES, PKA)");
@@ -128,21 +124,8 @@ async fn main(spawner: Spawner) {
     // Spawn the BLE runner task (required for proper BLE operation)
     spawner.spawn(ble_runner_task().expect("Failed to spawn BLE runner"));
 
-    // Create BLE Event Channel
-    static EVENT_BUFFER: StaticCell<[ChannelPacket; 8]> = StaticCell::new();
-    static EVENT_CHANNEL: StaticCell<zerocopy_channel::Channel<'static, CriticalSectionRawMutex, ChannelPacket>> =
-        StaticCell::new();
-
-    let event_channel = EVENT_CHANNEL.init(zerocopy_channel::Channel::new(
-        EVENT_BUFFER.init([ChannelPacket::default(); 8]),
-    ));
-
     // Initialize BLE stack
-    let controller = Controller::new(event_channel, rng, Some(aes), Some(pka), Irqs)
-        .await
-        .expect("BLE initialization failed");
-
-    let mut ble = Ble::new(controller).await.unwrap();
+    let (mut ble, _runtime) = Ble::new(rng, aes, pka, Irqs).await.expect("BLE initialization failed");
     info!("BLE stack initialized");
 
     // Initialize GATT server with a simple service
@@ -219,9 +202,7 @@ async fn main(spawner: Spawner) {
                         }
                     );
                     info!("  Peer Address: {}", conn.peer_address);
-                    info!("  Interval: {} ", conn.interval.interval());
-                    info!("  Latency: {}", conn.interval.conn_latency());
-                    info!("  Timeout: {}", conn.interval.supervision_timeout());
+                    info!("  Interval: {}", conn.interval);
                     info!("  Active connections: {}", ble.connections().count());
 
                     // Note: Advertising typically stops automatically on connection
@@ -234,21 +215,19 @@ async fn main(spawner: Spawner) {
                     info!("  Reason: 0x{:02X} ({})", reason, disconnect_reason_str(reason));
                     info!("  Active connections: {}", ble.connections().count());
 
-                    // Restart advertising after disconnection.
-                    // Advertising parameters are still configured, just re-enable.
+                    // Restart advertising after disconnection
                     info!("Restarting advertising...");
-                    match ble.start_advertising(adv_params.clone(), adv_data.clone(), None).await {
-                        Ok(()) => info!("Advertising restarted"),
-                        Err(e) => error!("Failed to restart advertising: {:?}", e),
+                    if let Err(e) = ble.start_advertising(adv_params.clone(), adv_data.clone(), None).await {
+                        error!("Failed to restart advertising: {:?}", e);
+                    } else {
+                        info!("Advertising restarted");
                     }
                 }
 
                 GapEvent::ConnectionParamsUpdated { handle, interval } => {
                     info!("=== CONNECTION PARAMS UPDATED ===");
                     info!("  Handle: 0x{:04X}", handle.0);
-                    info!("  New Interval: {}", interval.interval());
-                    info!("  New Latency: {}", interval.conn_latency());
-                    info!("  New Timeout: {}", interval.supervision_timeout());
+                    info!("  New Interval: {}", interval);
                 }
 
                 GapEvent::PhyUpdated { handle, tx_phy, rx_phy } => {

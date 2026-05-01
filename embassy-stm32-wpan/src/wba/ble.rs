@@ -15,22 +15,27 @@ use embassy_stm32::pka::Pka;
 use embassy_stm32::rng::Rng;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-
-use crate::gatt::server::init_gatt_layer;
-use crate::linklayer_plat::{HARDWARE_AES, HARDWARE_PKA, HARDWARE_RNG, run_radio_high_isr, run_radio_sw_low_isr};
-use crate::runner::{BLE_INIT_COMPLETED, BLE_INIT_WAKER, RUNNER_INIT, register_ble_tasks};
-use crate::wba::error::BleError;
-use crate::wba::gap::connection::{
-    Connection, ConnectionInitParams, ConnectionManager, ConnectionRole, DisconnectReason, GapEvent, LePhy,
-    MAX_CONNECTIONS,
+use stm32wb_hci::event::{
+    DisconnectionComplete, LeConnectionComplete, LeConnectionUpdateComplete, LeDataLengthChangeEvent,
+    LeEnhancedConnectionComplete, LePhyUpdateComplete,
 };
-use crate::wba::gap::scanner::Scanner;
-use crate::wba::gap::types::{AdvData, AdvParams};
-use crate::wba::gap_init::{GapInitParams, init_gap_and_hal};
-use crate::wba::hci::command::CommandSender;
-use crate::wba::hci::event::{Event, EventParams, read_event};
-use crate::wba::hci::types::{Address, DtmPacketPayload, Handle, Status};
-use crate::wba::ll_sys::init_ble_stack;
+use stm32wb_hci::{BdAddr, ConnectionHandle, Event, Status};
+
+use crate::bluetooth::error::BleError;
+use crate::bluetooth::gap::connection::{
+    Connection, ConnectionInitParams, ConnectionManager, DisconnectReason, GapEvent, LePhy, MAX_CONNECTIONS,
+};
+use crate::bluetooth::gap::scanner::Scanner;
+use crate::bluetooth::gap::types::{AdvData, AdvParams};
+use crate::bluetooth::gap_init::{GapInitParams, init_gap_and_hal};
+use crate::bluetooth::gatt::server::init_gatt_layer;
+use crate::bluetooth::hci::DtmPacketPayload;
+use crate::bluetooth::hci::command::CommandSender;
+use crate::bluetooth::{gap, hci};
+use crate::hci::event::read_event;
+use crate::linklayer_plat::{HARDWARE_AES, HARDWARE_PKA, HARDWARE_RNG, run_radio_high_isr, run_radio_sw_low_isr};
+use crate::ll_sys::init_ble_stack;
+use crate::runner::{BLE_INIT_COMPLETED, BLE_INIT_WAKER, RUNNER_INIT, register_ble_tasks};
 
 /// High interrupt handler.
 pub struct HighInterruptHandler {}
@@ -266,8 +271,8 @@ impl Ble {
     /// hardware to its initial state), and zeroes the host stack memory buffers so
     /// `init_ble_stack()` can reinitialize cleanly on the next `Ble::new()` call.
     ///
-    /// After this returns, call `Ble::new().await` to reinitialize, then rebuild
-    /// any GATT services and restart advertising.
+    /// After this returns, drop `Ble` and call `Ble::new().await` to reinitialize, then
+    /// rebuild any GATT services and restart advertising.
     ///
     /// # Returns
     ///
@@ -381,7 +386,7 @@ impl Ble {
         }
 
         // Configure host-stack advertising parameters and data
-        crate::wba::gap::advertiser::configure(&params, &adv_data, scan_rsp_data.as_ref())?;
+        gap::advertiser::configure(&params, &adv_data, scan_rsp_data.as_ref())?;
 
         // Enable LL advertising
         self.cmd_sender.le_set_advertise_enable(true)?;
@@ -407,7 +412,7 @@ impl Ble {
         yield_now().await;
 
         // Remove advertising configuration from the host stack
-        crate::wba::gap::advertiser::unconfigure()?;
+        gap::advertiser::unconfigure()?;
 
         self.is_advertising = false;
         Ok(())
@@ -420,12 +425,12 @@ impl Ble {
 
     /// Update advertising data without stopping advertising.
     pub fn update_adv_data(&mut self, adv_data: AdvData) -> Result<(), BleError> {
-        crate::wba::gap::advertiser::update_adv_data(&self.cmd_sender, &adv_data)
+        gap::advertiser::update_adv_data(&self.cmd_sender, &adv_data)
     }
 
     /// Update scan response data without stopping advertising.
     pub fn update_scan_rsp_data(&mut self, scan_rsp_data: AdvData) -> Result<(), BleError> {
-        crate::wba::gap::advertiser::update_scan_rsp_data(&self.cmd_sender, &scan_rsp_data)
+        gap::advertiser::update_scan_rsp_data(&self.cmd_sender, &scan_rsp_data)
     }
 
     /// Start a DTM transmitter test on the given channel.
@@ -437,7 +442,7 @@ impl Ble {
     /// `length`: payload bytes per packet, 0–255.
     /// `payload`: bit pattern to transmit.
     pub fn dtm_transmit(&mut self, channel: u8, length: u8, payload: DtmPacketPayload) -> Result<(), BleError> {
-        crate::wba::hci::command::le_transmitter_test(self, channel, length, payload)
+        hci::command::le_transmitter_test(unsafe { core::mem::transmute(self) }, channel, length, payload)
     }
 
     /// Start a DTM receiver test on the given channel.
@@ -447,7 +452,7 @@ impl Ble {
     ///
     /// `channel`: 0–39, maps to 2402 + (2 × N) MHz.
     pub fn dtm_receive(&mut self, channel: u8) -> Result<(), BleError> {
-        crate::wba::hci::command::le_receiver_test(self, channel)
+        hci::command::le_receiver_test(unsafe { core::mem::transmute(self) }, channel)
     }
 
     /// End a DTM test and return the received packet count.
@@ -455,7 +460,7 @@ impl Ble {
     /// For a receiver test: returns the number of packets received.
     /// For a transmitter test: always returns 0 per BLE spec Vol 4 Part E §7.8.30.
     pub fn dtm_end(&mut self) -> Result<u16, BleError> {
-        crate::wba::hci::command::le_test_end()
+        hci::command::le_test_end()
     }
 
     /// Set a random address for the device
@@ -466,7 +471,7 @@ impl Ble {
     /// # Parameters
     ///
     /// - `address`: 6-byte random address
-    pub fn set_random_address(&self, address: Address) -> Result<(), BleError> {
+    pub fn set_random_address(&self, address: BdAddr) -> Result<(), BleError> {
         self.cmd_sender.le_set_random_address(&address.0)
     }
 
@@ -505,12 +510,12 @@ impl Ble {
     }
 
     /// Get a connection by handle
-    pub fn get_connection(&self, handle: Handle) -> Option<&Connection> {
+    pub fn get_connection(&self, handle: ConnectionHandle) -> Option<&Connection> {
         self.connections.get_by_handle(handle)
     }
 
     /// Get a mutable connection by handle
-    pub fn get_connection_mut(&mut self, handle: Handle) -> Option<&mut Connection> {
+    pub fn get_connection_mut(&mut self, handle: ConnectionHandle) -> Option<&mut Connection> {
         self.connections.get_by_handle_mut(handle)
     }
 
@@ -520,8 +525,8 @@ impl Ble {
     ///
     /// - `handle`: Connection handle to disconnect
     /// - `reason`: Reason for disconnection
-    pub fn disconnect(&self, handle: Handle, reason: DisconnectReason) -> Result<(), BleError> {
-        self.cmd_sender.disconnect(handle.as_u16(), reason.as_u8())
+    pub fn disconnect(&self, handle: ConnectionHandle, reason: DisconnectReason) -> Result<(), BleError> {
+        self.cmd_sender.disconnect(handle.0, reason.as_u8())
     }
 
     /// Initiate a connection to a peripheral device (Central role)
@@ -537,8 +542,7 @@ impl Ble {
             params.scan_interval,
             params.scan_window,
             params.use_filter_accept_list,
-            params.peer_address_type as u8,
-            params.peer_address.as_bytes(),
+            params.peer_address,
             params.own_address_type,
             params.conn_interval_min,
             params.conn_interval_max,
@@ -565,14 +569,14 @@ impl Ble {
     /// - `supervision_timeout`: Supervision timeout (units of 10ms)
     pub fn update_connection_params(
         &self,
-        handle: Handle,
+        handle: ConnectionHandle,
         interval_min: u16,
         interval_max: u16,
         latency: u16,
         supervision_timeout: u16,
     ) -> Result<(), BleError> {
         self.cmd_sender.le_connection_update(
-            handle.as_u16(),
+            handle.0,
             interval_min,
             interval_max,
             latency,
@@ -587,8 +591,8 @@ impl Ble {
     /// # Returns
     ///
     /// Tuple of (tx_phy, rx_phy)
-    pub fn read_phy(&self, handle: Handle) -> Result<(LePhy, LePhy), BleError> {
-        let (tx, rx) = self.cmd_sender.le_read_phy(handle.as_u16())?;
+    pub fn read_phy(&self, handle: ConnectionHandle) -> Result<(LePhy, LePhy), BleError> {
+        let (tx, rx) = self.cmd_sender.le_read_phy(handle.0)?;
         Ok((LePhy::from_u8(tx), LePhy::from_u8(rx)))
     }
 
@@ -602,34 +606,25 @@ impl Ble {
     ///
     /// - `Some(GapEvent)` if this was a connection-related event
     /// - `None` if not a connection event
-    pub fn process_event(&mut self, event: &Event) -> Option<GapEvent> {
-        match &event.params {
-            EventParams::LeConnectionComplete {
+    pub fn process_event(&mut self, event: &stm32wb_hci::Event) -> Option<GapEvent> {
+        match event {
+            Event::LeConnectionComplete(LeConnectionComplete {
                 status,
-                handle,
+                conn_handle,
                 role,
-                peer_address_type,
-                peer_address,
+                peer_bd_addr,
                 conn_interval,
-                conn_latency,
-                supervision_timeout,
-                ..
-            } => {
-                if *status == Status::Success {
-                    let role = ConnectionRole::from_u8(*role)?;
-                    let conn = Connection::new(
-                        *handle,
-                        role,
-                        *peer_address_type,
-                        *peer_address,
-                        *conn_interval,
-                        *conn_latency,
-                        *supervision_timeout,
-                    );
+                central_clock_accuracy,
+            }) => {
+                let _ = central_clock_accuracy;
+
+                if matches!(status, Status::Success) {
+                    let conn = Connection::new(*conn_handle, *role, *peer_bd_addr, *conn_interval);
+
                     if let Some(stored_conn) = self.connections.allocate(conn.clone()) {
                         // Read PHY after connection
-                        if let Ok((tx_phy, rx_phy)) = self.cmd_sender.le_read_phy(handle.as_u16()) {
-                            stored_conn.update_phy(LePhy::from_u8(tx_phy), LePhy::from_u8(rx_phy));
+                        if let Ok((tx_phy, rx_phy)) = self.cmd_sender.le_read_phy(conn_handle.0) {
+                            stored_conn.update_phy(tx_phy.try_into().unwrap(), rx_phy.try_into().unwrap());
                         }
                     }
                     // LL stops advertising automatically on connection
@@ -639,37 +634,32 @@ impl Ble {
                     None
                 }
             }
-
-            EventParams::LeEnhancedConnectionComplete {
+            Event::LeEnhancedConnectionComplete(LeEnhancedConnectionComplete {
                 status,
-                handle,
+                conn_handle,
                 role,
-                peer_address_type,
-                peer_address,
+                peer_bd_addr,
                 local_resolvable_private_address,
                 peer_resolvable_private_address,
                 conn_interval,
-                conn_latency,
-                supervision_timeout,
-                ..
-            } => {
-                if *status == Status::Success {
-                    let role = ConnectionRole::from_u8(*role)?;
+                central_clock_accuracy,
+            }) => {
+                let _ = central_clock_accuracy;
+
+                if matches!(status, Status::Success) {
                     let conn = Connection::new_enhanced(
-                        *handle,
-                        role,
-                        *peer_address_type,
-                        *peer_address,
+                        *conn_handle,
+                        *role,
+                        *peer_bd_addr,
                         *local_resolvable_private_address,
                         *peer_resolvable_private_address,
                         *conn_interval,
-                        *conn_latency,
-                        *supervision_timeout,
                     );
+
                     if let Some(stored_conn) = self.connections.allocate(conn.clone()) {
                         // Read PHY after connection
-                        if let Ok((tx_phy, rx_phy)) = self.cmd_sender.le_read_phy(handle.as_u16()) {
-                            stored_conn.update_phy(LePhy::from_u8(tx_phy), LePhy::from_u8(rx_phy));
+                        if let Ok((tx_phy, rx_phy)) = self.cmd_sender.le_read_phy(conn_handle.0) {
+                            stored_conn.update_phy(tx_phy.try_into().unwrap(), rx_phy.try_into().unwrap());
                         }
                     }
                     // LL stops advertising automatically on connection
@@ -679,77 +669,71 @@ impl Ble {
                     None
                 }
             }
+            Event::DisconnectionComplete(DisconnectionComplete {
+                status,
+                conn_handle,
+                reason,
+            }) => {
+                if matches!(status, Status::Success) {
+                    self.connections.remove(*conn_handle);
 
-            EventParams::DisconnectionComplete { status, handle, reason } => {
-                if *status == Status::Success {
-                    self.connections.remove(*handle);
                     Some(GapEvent::Disconnected {
-                        handle: *handle,
-                        reason: *reason,
+                        handle: *conn_handle,
+                        reason: (*reason).into(),
                     })
                 } else {
                     None
                 }
             }
-
-            EventParams::LeConnectionUpdateComplete {
+            Event::LeConnectionUpdateComplete(LeConnectionUpdateComplete {
                 status,
-                handle,
+                conn_handle,
                 conn_interval,
-                conn_latency,
-                supervision_timeout,
-            } => {
-                if *status == Status::Success {
-                    if let Some(conn) = self.connections.get_by_handle_mut(*handle) {
-                        conn.update_params(*conn_interval, *conn_latency, *supervision_timeout);
+            }) => {
+                if matches!(status, Status::Success) {
+                    if let Some(conn) = self.connections.get_by_handle_mut(*conn_handle) {
+                        conn.update_interval(*conn_interval);
                     }
                     Some(GapEvent::ConnectionParamsUpdated {
-                        handle: *handle,
+                        handle: *conn_handle,
                         interval: *conn_interval,
-                        latency: *conn_latency,
-                        supervision_timeout: *supervision_timeout,
                     })
                 } else {
                     None
                 }
             }
-
-            EventParams::LePhyUpdateComplete {
+            Event::LePhyUpdateComplete(LePhyUpdateComplete {
+                conn_handle,
                 status,
-                handle,
                 tx_phy,
                 rx_phy,
-            } => {
-                if *status == Status::Success {
-                    let tx = LePhy::from_u8(*tx_phy);
-                    let rx = LePhy::from_u8(*rx_phy);
-                    if let Some(conn) = self.connections.get_by_handle_mut(*handle) {
-                        conn.update_phy(tx, rx);
+            }) => {
+                if matches!(status, Status::Success) {
+                    if let Some(conn) = self.connections.get_by_handle_mut(*conn_handle) {
+                        conn.update_phy(*tx_phy, *rx_phy);
                     }
                     Some(GapEvent::PhyUpdated {
-                        handle: *handle,
-                        tx_phy: tx,
-                        rx_phy: rx,
+                        handle: *conn_handle,
+                        tx_phy: *tx_phy,
+                        rx_phy: *rx_phy,
                     })
                 } else {
                     None
                 }
             }
-
-            EventParams::LeDataLengthChange {
-                handle,
-                max_tx_octets,
-                max_tx_time,
+            Event::LeDataLengthChangeEvent(LeDataLengthChangeEvent {
+                conn_handle,
                 max_rx_octets,
                 max_rx_time,
-            } => Some(GapEvent::DataLengthChanged {
-                handle: *handle,
+                max_tx_octets,
+                max_tx_time,
+            }) => Some(GapEvent::DataLengthChanged {
+                handle: *conn_handle,
                 max_tx_octets: *max_tx_octets,
                 max_tx_time: *max_tx_time,
                 max_rx_octets: *max_rx_octets,
                 max_rx_time: *max_rx_time,
             }),
-
             _ => None,
         }
     }
@@ -769,7 +753,7 @@ impl Ble {
     /// processed automatically by the stack for operations like advertising
     /// and scanning. This is provided for applications that need to handle
     /// raw events (e.g., for connection management).
-    pub async fn read_event(&self) -> Event {
+    pub async fn read_event(&mut self) -> stm32wb_hci::Event {
         read_event().await
     }
 }

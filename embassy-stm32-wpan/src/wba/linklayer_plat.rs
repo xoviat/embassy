@@ -1899,15 +1899,7 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
         super::runner::schedule_ble_host_task();
     }
 
-    // Parse and queue the event for processing.
-    // Skip byte 0 (0x04 HCI Event packet indicator) — the parser expects
-    // data starting at the event code byte.
-    let parse_data = if length >= 2 && event_data[0] == 0x04 {
-        &event_data[1..]
-    } else {
-        event_data
-    };
-    if let Some(event) = super::hci::event::Event::parse(parse_data) {
+    if let Ok(event) = stm32wb_hci::Event::new(stm32wb_hci::event::Packet(&event_data[1..])) {
         match super::hci::event::try_send_event(event) {
             Ok(_) => {
                 super::runner::schedule_ble_host_task();
