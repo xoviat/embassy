@@ -1,8 +1,9 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip STM32WBA65RI"
+# runner = "probe-rs run --chip STM32WBA65RI"
+runner = "teleprobe client run --target nucleo-stm32wba65ri"
 
 [build]
 target = "thumbv8m.main-none-eabihf"
 
 [env]
-DEFMT_LOG = "info"
+DEFMT_LOG = "debug"
