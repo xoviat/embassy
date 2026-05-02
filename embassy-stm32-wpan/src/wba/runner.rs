@@ -50,7 +50,7 @@ use super::bindings::mac;
 use super::{linklayer_plat, util_seq};
 
 // BleStack_Process return values
-const BLE_SLEEPMODE_RUNNING: u8 = 0;
+pub const BLE_SLEEPMODE_RUNNING: u8 = 0;
 
 // Task ID for BLE Host processing (next available after CFG_TASK_NBR=9)
 const CFG_TASK_BLE_HOST: u32 = 9;
@@ -92,14 +92,8 @@ fn ble_stack_cb_process() {
     util_seq::UTIL_SEQ_SetTask(TASK_BLE_HOST_MASK, TASK_PRIO_BLE_HOST);
 }
 
-/// Whether the link layer init has been completed
-static LL_INIT_COMPLETED: AtomicBool = AtomicBool::new(false);
-
-/// Whether ble init has been completed
-pub(crate) static BLE_INIT_COMPLETED: AtomicBool = AtomicBool::new(false);
-
 /// Ble runner task initialized
-pub(crate) static RUNNER_INIT: AtomicBool = AtomicBool::new(false);
+pub(crate) static BLE_INIT: AtomicBool = AtomicBool::new(false);
 
 /// Ble init waker
 pub(crate) static BLE_INIT_WAKER: AtomicWaker = AtomicWaker::new();
@@ -158,26 +152,11 @@ pub fn schedule_ble_host_task() {
 /// }
 /// ```
 pub async fn ble_runner() -> ! {
-    info!("BLE runner started");
-
-    RUNNER_INIT.store(true, Ordering::Release);
-
-    // Mark that the runner has started (BLE init is now done via init_ble_stack())
-    if !LL_INIT_COMPLETED.load(Ordering::Acquire) {
-        trace!("BLE runner: first run, initializing sequencer context");
-
-        // Do one context switch to initialize the sequencer
-        util_seq::seq_resume();
-
-        LL_INIT_COMPLETED.store(true, Ordering::Release);
-
-        trace!("BLE runner: sequencer context initialized");
-    }
-
+    info!("BLE runner started; waiting for BLE init");
     poll_fn(|cx| {
         BLE_INIT_WAKER.register(cx.waker());
 
-        if BLE_INIT_COMPLETED.load(Ordering::Acquire) {
+        if BLE_INIT.load(Ordering::Acquire) {
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -186,26 +165,6 @@ pub async fn ble_runner() -> ! {
     .await;
 
     info!("BLE runner execution started");
-
-    // Schedule the initial tasks and kick the BLE stack.
-    // BLE init and GAP setup happened before the runner started, so there may be
-    // pending HCI commands that need BleStack_Process to deliver them to the LL.
-    schedule_ble_host_task();
-    util_seq::UTIL_SEQ_SetTask(TASK_LINK_LAYER_MASK, 0);
-    util_seq::seq_resume();
-
-    // Flush pending HCI commands through BleStack_Process.
-    // This delivers scan enable, connection parameters, etc. to the LL.
-    loop {
-        let result = unsafe { BleStack_Process() };
-        if result != BLE_SLEEPMODE_RUNNING {
-            break;
-        }
-    }
-
-    // Run the sequencer once more to process any LL events from the enable
-    util_seq::UTIL_SEQ_SetTask(TASK_LINK_LAYER_MASK, 0);
-    util_seq::seq_resume();
 
     loop {
         // Wait for either a sequencer event or a timer expiry
