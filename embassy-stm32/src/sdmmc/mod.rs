@@ -14,9 +14,13 @@ use embassy_sync::waitqueue::AtomicWaker;
 use sdio_host::Cmd;
 use sdio_host::common_cmd::{self, R1, R2, Resp, ResponseLen, Rz};
 use sdio_host::sd::{BusWidth, CID, CSD, CardStatus};
+#[cfg(sdmmc_uhs)]
+use sdio_host::sd_cmd;
 
 #[cfg(sdmmc_v1)]
 use crate::dma::ChannelAndRequest;
+#[cfg(sdmmc_uhs)]
+use crate::gpio::Output;
 #[cfg(gpio_v2)]
 use crate::gpio::Pull;
 use crate::gpio::{AfType, Flex, OutputType, Speed};
@@ -221,6 +225,12 @@ pub enum Error {
     BadClock,
     /// Signaling switch failed.
     SignalingSwitchFailed,
+    /// UHS-I voltage switch (CMD11) failed — the card refused 1.8V or
+    /// the peripheral didn't complete the handshake. The driver leaves
+    /// the bus at 3.3V and the caller can retry without the vswitch
+    /// pin to fall back to HS mode.
+    #[cfg(sdmmc_uhs)]
+    VoltageSwitchFailed,
     /// Underrun error
     Underrun,
     /// ST bit error.
@@ -435,6 +445,41 @@ pub struct Sdmmc<'d> {
     _d6: Option<Flex<'d>>,
     d7: Option<Flex<'d>>,
 
+    /// Optional level-shifter select pin for UHS-I 1.8V signalling.
+    /// Driver toggles it during the CMD11 (VOLTAGE_SWITCH) handshake.
+    /// The caller picks the initial level (3.3V) so polarity is per-board.
+    /// Only present on `sdmmc_v3` (v1 lacks the matching POWER bits and
+    /// v2 isn't validated yet) AND with `feature = "time"` (the
+    /// voltage-switch state machine waits on hardware flags via
+    /// `embassy_time::with_timeout`).
+    #[cfg(sdmmc_uhs)]
+    vswitch_pin: Option<Output<'d>>,
+
+    /// `true` after a successful CMD11 voltage switch. `clkcr_set_clkdiv`
+    /// reads this to decide whether to set `CLKCR.busspeed = 1` (1.8V
+    /// UHS timing) on subsequent clock-divider updates.
+    #[cfg(sdmmc_uhs)]
+    uhs_active: bool,
+
+    /// `true` after a successful UHS-SDR50 negotiation. SDR50 runs the
+    /// bus at up to 100 MHz / 1.8V — at that speed the SDMMC peripheral
+    /// must sample receive data on the CKIN feedback clock rather than
+    /// the launch clock to recover the right timing margin. We set
+    /// `CLKCR.selclkrx = 1` whenever this flag is on.
+    #[cfg(sdmmc_uhs)]
+    feedback_clk: bool,
+
+    /// Optional CKIN feedback-clock input pin. `Some` only when the user
+    /// constructed via `*_with_vswitch_ckin`. `acquire()` checks this
+    /// at the SDR25→SDR50 decision: if absent, SDR50 isn't attempted
+    /// (and `CLKCR.SELCLKRX` is left at 0 selecting `sdmmc_io_in_ck`).
+    /// On chips/instances where the silicon doesn't expose CKIN (e.g.
+    /// STM32N6 SDMMC2) no `CkinPin<T>` impl exists, so the
+    /// `*_with_vswitch_ckin` constructor is uncallable and this field
+    /// stays `None`.
+    #[cfg(sdmmc_uhs)]
+    ckin_pin: Option<Flex<'d>>,
+
     config: Config,
 }
 
@@ -444,6 +489,11 @@ const CMD_AF: AfType = AfType::output(OutputType::PushPull, Speed::VeryHigh);
 #[cfg(gpio_v2)]
 const CMD_AF: AfType = AfType::output_pull(OutputType::PushPull, Speed::VeryHigh, Pull::Up);
 const DATA_AF: AfType = CMD_AF;
+/// CKIN is a feedback clock INPUT into the SDMMC peripheral (the chip
+/// samples this signal). Configured as a high-speed input on the
+/// peripheral's CKIN AF.
+#[cfg(sdmmc_uhs)]
+const CKIN_AF: AfType = AfType::input(Pull::None);
 
 #[cfg(sdmmc_v1)]
 impl<'d> Sdmmc<'d> {
@@ -471,6 +521,10 @@ impl<'d> Sdmmc<'d> {
             None,
             None,
             None,
+            None,
+            #[cfg(sdmmc_uhs)]
+            None,
+            #[cfg(sdmmc_uhs)]
             None,
             config,
         )
@@ -503,6 +557,10 @@ impl<'d> Sdmmc<'d> {
             None,
             None,
             None,
+            None,
+            #[cfg(sdmmc_uhs)]
+            None,
+            #[cfg(sdmmc_uhs)]
             None,
             config,
         )
@@ -543,6 +601,10 @@ impl<'d> Sdmmc<'d> {
             new_pin!(d5, DATA_AF),
             new_pin!(d6, DATA_AF),
             new_pin!(d7, DATA_AF),
+            #[cfg(sdmmc_uhs)]
+            None,
+            #[cfg(sdmmc_uhs)]
+            None,
             config,
         )
     }
@@ -571,6 +633,10 @@ impl<'d> Sdmmc<'d> {
             None,
             None,
             None,
+            #[cfg(sdmmc_uhs)]
+            None,
+            #[cfg(sdmmc_uhs)]
+            None,
             config,
         )
     }
@@ -598,6 +664,10 @@ impl<'d> Sdmmc<'d> {
             None,
             None,
             None,
+            None,
+            #[cfg(sdmmc_uhs)]
+            None,
+            #[cfg(sdmmc_uhs)]
             None,
             config,
         )
@@ -634,12 +704,247 @@ impl<'d> Sdmmc<'d> {
             new_pin!(d5, DATA_AF),
             new_pin!(d6, DATA_AF),
             new_pin!(d7, DATA_AF),
+            #[cfg(sdmmc_uhs)]
+            None,
+            #[cfg(sdmmc_uhs)]
+            None,
             config,
         )
     }
 }
 
+// UHS-I (1.8V signalling) constructors. Only on `sdmmc_v3` with
+// `feature = "time"` — see `new_1bit_with_vswitch` for the rationale.
+#[cfg(sdmmc_uhs)]
 impl<'d> Sdmmc<'d> {
+    /// Create a new SDMMC driver, with 1 data lane and a UHS-I level-
+    /// shifter select pin.
+    ///
+    /// Only available on `sdmmc_v3` (STM32N6) with `feature = "time"`:
+    /// other peripheral versions lack the required POWER/VSWITCH bits
+    /// (v1) or are unvalidated (v2), and the switch handshake uses
+    /// `embassy_time::with_timeout` to wait on hardware status flags.
+    ///
+    /// The caller pre-constructs an `Output` for the board's level-
+    /// shifter select pin at its 3.3V level (polarity is per-board);
+    /// the driver toggles it during the CMD11 handshake whenever the
+    /// card accepts the S18A request on ACMD41.
+    pub fn new_1bit_with_vswitch<T: Instance>(
+        sdmmc: Peri<'d, T>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        clk: Peri<'d, impl CkPin<T>>,
+        cmd: Peri<'d, impl CmdPin<T>>,
+        d0: Peri<'d, impl D0Pin<T>>,
+        vswitch: Output<'d>,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            sdmmc,
+            new_pin!(clk, CLK_AF).unwrap(),
+            new_pin!(cmd, CMD_AF).unwrap(),
+            new_pin!(d0, DATA_AF).unwrap(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vswitch),
+            None,
+            config,
+        )
+    }
+
+    /// 4 data lanes; see [`Self::new_1bit_with_vswitch`].
+    pub fn new_4bit_with_vswitch<T: Instance>(
+        sdmmc: Peri<'d, T>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        clk: Peri<'d, impl CkPin<T>>,
+        cmd: Peri<'d, impl CmdPin<T>>,
+        d0: Peri<'d, impl D0Pin<T>>,
+        d1: Peri<'d, impl D1Pin<T>>,
+        d2: Peri<'d, impl D2Pin<T>>,
+        d3: Peri<'d, impl D3Pin<T>>,
+        vswitch: Output<'d>,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            sdmmc,
+            new_pin!(clk, CLK_AF).unwrap(),
+            new_pin!(cmd, CMD_AF).unwrap(),
+            new_pin!(d0, DATA_AF).unwrap(),
+            new_pin!(d1, DATA_AF),
+            new_pin!(d2, DATA_AF),
+            new_pin!(d3, DATA_AF),
+            None,
+            None,
+            None,
+            None,
+            Some(vswitch),
+            None,
+            config,
+        )
+    }
+
+    /// 1 data lane, plus UHS-I vswitch and a CKIN feedback-clock pin.
+    ///
+    /// Only callable on SDMMC instances whose silicon exposes a CKIN
+    /// signal — a `CkinPin<T>` trait impl must exist for the passed-in
+    /// pin. With this constructor the driver is allowed to negotiate
+    /// UHS-SDR50 (CMD6 function group 1 ID 2, `CLKCR.SELCLKRX = 1`);
+    /// without it, `acquire()` caps at SDR25.
+    pub fn new_1bit_with_vswitch_ckin<T: Instance>(
+        sdmmc: Peri<'d, T>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        clk: Peri<'d, impl CkPin<T>>,
+        cmd: Peri<'d, impl CmdPin<T>>,
+        d0: Peri<'d, impl D0Pin<T>>,
+        vswitch: Output<'d>,
+        ckin: Peri<'d, impl CkinPin<T>>,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            sdmmc,
+            new_pin!(clk, CLK_AF).unwrap(),
+            new_pin!(cmd, CMD_AF).unwrap(),
+            new_pin!(d0, DATA_AF).unwrap(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vswitch),
+            new_pin!(ckin, CKIN_AF),
+            config,
+        )
+    }
+
+    /// 4 data lanes; see [`Self::new_1bit_with_vswitch_ckin`].
+    pub fn new_4bit_with_vswitch_ckin<T: Instance>(
+        sdmmc: Peri<'d, T>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        clk: Peri<'d, impl CkPin<T>>,
+        cmd: Peri<'d, impl CmdPin<T>>,
+        d0: Peri<'d, impl D0Pin<T>>,
+        d1: Peri<'d, impl D1Pin<T>>,
+        d2: Peri<'d, impl D2Pin<T>>,
+        d3: Peri<'d, impl D3Pin<T>>,
+        vswitch: Output<'d>,
+        ckin: Peri<'d, impl CkinPin<T>>,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            sdmmc,
+            new_pin!(clk, CLK_AF).unwrap(),
+            new_pin!(cmd, CMD_AF).unwrap(),
+            new_pin!(d0, DATA_AF).unwrap(),
+            new_pin!(d1, DATA_AF),
+            new_pin!(d2, DATA_AF),
+            new_pin!(d3, DATA_AF),
+            None,
+            None,
+            None,
+            None,
+            Some(vswitch),
+            new_pin!(ckin, CKIN_AF),
+            config,
+        )
+    }
+}
+
+/// Tear-down guard for `voltage_switch`. On Drop with `armed = true`,
+/// flips the level shifter back to 3.3V (when `pin_toggled = true`)
+/// and clears the vswitch trigger bits, restoring the peripheral so
+/// the caller can retry without UHS.
+#[cfg(sdmmc_uhs)]
+struct VswitchGuard<'a, 'd> {
+    sdmmc: &'a mut Sdmmc<'d>,
+    pin_toggled: bool,
+    armed: bool,
+}
+
+#[cfg(sdmmc_uhs)]
+impl Drop for VswitchGuard<'_, '_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if self.pin_toggled {
+            if let Some(pin) = self.sdmmc.vswitch_pin.as_mut() {
+                pin.toggle();
+            }
+        }
+        self.sdmmc.info.regs.power().modify(|w| {
+            w.set_vswitch(false);
+            w.set_vswitchen(false);
+        });
+    }
+}
+
+impl<'d> Sdmmc<'d> {
+    /// True if the driver has switched to UHS-I 1.8V signalling. Always
+    /// `false` outside `cfg(sdmmc_uhs)`.
+    pub(crate) fn uhs_active(&self) -> bool {
+        #[cfg(sdmmc_uhs)]
+        return self.uhs_active;
+        #[cfg(not(sdmmc_uhs))]
+        return false;
+    }
+
+    /// Set the CKIN feedback-clock sampling flag (`CLKCR.SELCLKRX`).
+    /// Caller must follow with a `clkcr_set_clkdiv` to write the bit.
+    /// No-op outside `cfg(sdmmc_uhs)`.
+    pub(crate) fn set_feedback_clk(&mut self, on: bool) {
+        #[cfg(sdmmc_uhs)]
+        {
+            self.feedback_clk = on;
+        }
+        #[cfg(not(sdmmc_uhs))]
+        let _ = on;
+    }
+
+    /// True if this driver owns a UHS-I level-shifter pin. Always
+    /// `false` outside `cfg(sdmmc_uhs)`.
+    pub(crate) fn has_vswitch(&self) -> bool {
+        #[cfg(sdmmc_uhs)]
+        return self.vswitch_pin.is_some();
+        #[cfg(not(sdmmc_uhs))]
+        return false;
+    }
+
+    /// True if this driver owns a CKIN feedback-clock pin (gate for the
+    /// SDR50 negotiation path). Always `false` outside `cfg(sdmmc_uhs)`.
+    pub(crate) fn has_ckin(&self) -> bool {
+        #[cfg(sdmmc_uhs)]
+        return self.ckin_pin.is_some();
+        #[cfg(not(sdmmc_uhs))]
+        return false;
+    }
+
+    /// Restore the level-shifter pin to 3.3V and clear the UHS-related
+    /// `CLKCR` bits. Called by `acquire()` so that re-init after a card
+    /// swap starts from a known 3.3V / SDR12 state. No-op outside
+    /// `cfg(sdmmc_uhs)`.
+    pub(crate) fn reset_uhs_state(&mut self) {
+        #[cfg(sdmmc_uhs)]
+        {
+            if self.uhs_active {
+                if let Some(pin) = self.vswitch_pin.as_mut() {
+                    pin.toggle();
+                }
+            }
+            self.info.regs.clkcr().modify(|w| {
+                w.set_busspeed(false);
+                w.set_selclkrx(0);
+            });
+            self.uhs_active = false;
+            self.feedback_clk = false;
+        }
+    }
+
     fn enable_interrupts(&self) {
         let regs = self.info.regs;
         critical_section::with(|_| {
@@ -670,6 +975,8 @@ impl<'d> Sdmmc<'d> {
         d5: Option<Flex<'d>>,
         d6: Option<Flex<'d>>,
         d7: Option<Flex<'d>>,
+        #[cfg(sdmmc_uhs)] vswitch_pin: Option<Output<'d>>,
+        #[cfg(sdmmc_uhs)] ckin_pin: Option<Flex<'d>>,
         config: Config,
     ) -> Self {
         rcc::enable_and_reset::<T>();
@@ -717,6 +1024,15 @@ impl<'d> Sdmmc<'d> {
             _d5: d5,
             _d6: d6,
             d7,
+
+            #[cfg(sdmmc_uhs)]
+            vswitch_pin,
+            #[cfg(sdmmc_uhs)]
+            uhs_active: false,
+            #[cfg(sdmmc_uhs)]
+            feedback_clk: false,
+            #[cfg(sdmmc_uhs)]
+            ckin_pin,
 
             config,
         }
@@ -952,13 +1268,158 @@ impl<'d> Sdmmc<'d> {
 
         // CPSMACT and DPSMACT must be 0 to set CLKDIV or WIDBUS
         self.wait_idle();
+        #[cfg(sdmmc_uhs)]
+        let self_uhs_active = self.uhs_active;
+        #[cfg(sdmmc_uhs)]
+        let self_feedback_clk = self.feedback_clk;
         regs.clkcr().modify(|w| {
             w.set_clkdiv(clkdiv);
             #[cfg(sdmmc_v1)]
             w.set_bypass(_bypass);
             w.set_widbus(widbus);
+            // Re-assert busspeed only when UHS is currently active —
+            // a clkcr_set_clkdiv call after the voltage-switch must
+            // preserve busspeed=1 across the bus-speed bump. When UHS
+            // is not active we leave busspeed completely alone (i.e.
+            // do not write 0) to keep the non-UHS path 100 % bit-for-
+            // bit identical to the pre-UHS HAL.
+            #[cfg(sdmmc_uhs)]
+            if self_uhs_active {
+                w.set_busspeed(true);
+            }
+            // selclkrx = 1 selects CKIN feedback-clock sampling, which
+            // is required for SDR50 (>50 MHz at 1.8V). For lower modes
+            // we leave selclkrx at 0 (use SDMMC_CK directly).
+            #[cfg(sdmmc_uhs)]
+            if self_feedback_clk {
+                w.set_selclkrx(1);
+            }
         });
 
+        Ok(())
+    }
+
+    /// Poll a status-register flag until it goes high or the timeout
+    /// elapses. Used by `voltage_switch()` to wait on `CKSTOP` and
+    /// `VSWEND` without busy-spinning the CPU.
+    #[cfg(sdmmc_uhs)]
+    async fn wait_status_flag(
+        &self,
+        timeout: embassy_time::Duration,
+        check: impl Fn(crate::pac::sdmmc::regs::Star) -> bool,
+    ) -> Result<(), Error> {
+        let regs = self.info.regs;
+        embassy_time::with_timeout(timeout, async {
+            while !check(regs.star().read()) {
+                embassy_time::Timer::after(embassy_time::Duration::from_micros(100)).await;
+            }
+        })
+        .await
+        .map_err(|_| Error::VoltageSwitchFailed)
+    }
+
+    /// Run the UHS-I voltage-switch (CMD11) handshake against the card,
+    /// drive the level-shifter pin to its 1.8V level, and mark the
+    /// peripheral as UHS-active so subsequent `clkcr_set_clkdiv` calls
+    /// set `CLKCR.busspeed = 1`.
+    ///
+    /// Caller MUST have verified the card responded to ACMD41 with
+    /// `S18A = 1` AND that `self.has_vswitch()` is true. This routine
+    /// must be called while the bus is at the 400 kHz init clock; see
+    /// SD Physical Layer Spec §3.7.5 / RM0486 §30.8.
+    ///
+    /// On success, `self.uhs_active` is set and the level shifter is
+    /// at 1.8V; the bus clock has been auto-restarted by hardware. On
+    /// failure, returns `Error::VoltageSwitchFailed` with the level
+    /// shifter restored to 3.3V so the caller can retry without UHS.
+    #[cfg(sdmmc_uhs)]
+    async fn voltage_switch(&mut self) -> Result<(), Error> {
+        use embassy_time::Duration;
+
+        // CKSTOP fires within microseconds of the CMD11 R1 ack at
+        // 400 kHz; a 50 ms ceiling is generous.
+        const CKSTOP_TIMEOUT: Duration = Duration::from_millis(50);
+        // VSWEND fires after the hardware-managed 5 ms clock-low hold
+        // plus the 1 ms post-restart sampling window — ~6 ms typical.
+        const VSWEND_TIMEOUT: Duration = Duration::from_millis(50);
+
+        let regs = self.info.regs;
+
+        // Clear stale CKSTOP / VSWEND flags from a previous attempt and
+        // arm the voltage-switch state machine. The next CMD11 R1 will
+        // trigger the clock-stop + timed-hold sequence.
+        regs.icr().write(|w| {
+            w.set_ckstopc(true);
+            w.set_vswendc(true);
+        });
+        regs.power().modify(|w| w.set_vswitchen(true));
+
+        // RAII guard: on any early return below, restore the level
+        // shifter to 3.3V (if we'd already toggled to 1.8V) and clear
+        // the vswitch trigger bits.
+        let mut guard = VswitchGuard {
+            sdmmc: &mut *self,
+            pin_toggled: false,
+            armed: true,
+        };
+
+        // 1. Send CMD11.
+        guard
+            .sdmmc
+            .cmd(sd_cmd::voltage_switch(), true, false)
+            .map_err(|_| Error::VoltageSwitchFailed)?;
+
+        // 2. Wait for CKSTOP — peripheral parked the clock low.
+        guard.sdmmc.wait_status_flag(CKSTOP_TIMEOUT, |s| s.ckstop()).await?;
+        regs.icr().write(|w| w.set_ckstopc(true));
+
+        // 3. Toggle level-shifter pin to 1.8V (caller pre-set 3.3V).
+        if let Some(pin) = guard.sdmmc.vswitch_pin.as_mut() {
+            pin.toggle();
+        }
+        guard.pin_toggled = true;
+
+        // 4. Release the clock-low hold. Hardware holds SDMMC_CK low
+        //    for ≥5 ms then auto-restarts.
+        regs.power().modify(|w| w.set_vswitch(true));
+
+        // 5. Wait for VSWEND — peripheral re-sampled D0 after restart.
+        guard.sdmmc.wait_status_flag(VSWEND_TIMEOUT, |s| s.vswend()).await?;
+        regs.icr().write(|w| w.set_vswendc(true));
+
+        // 6. STAR.BUSYD0 is the INVERTED level of D0 (per the v3 metapac
+        //    docstring "Inverted value of SDMMC_D0 line (Busy)"):
+        //      BUSYD0 = 1 → D0 LOW  → card still busy / refused switch
+        //      BUSYD0 = 0 → D0 HIGH → card released D0 / handshake ok
+        if regs.star().read().busyd0() {
+            return Err(Error::VoltageSwitchFailed);
+        }
+
+        // Success — disarm the abort guard and finalise.
+        guard.armed = false;
+        drop(guard);
+
+        // 7. Disarm the voltage-switch state machine. VSWITCHEN/VSWITCH
+        //    are one-shot triggers, not mode bits — leaving them set
+        //    has been observed to wedge the next command (e.g. CMD2).
+        regs.power().modify(|w| {
+            w.set_vswitch(false);
+            w.set_vswitchen(false);
+        });
+
+        // 8. Mark UHS active and assert busspeed=1 right away. The next
+        //    CMDs (CMD2/CMD3/CMD9/CMD7/...) fire before the next
+        //    clkcr_set_clkdiv, and they need UHS timing on the 1.8V bus.
+        //    CLKDIV / WIDBUS stay at their init_idle values (400 kHz,
+        //    1-bit) — only the busspeed bit flips.
+        self.uhs_active = true;
+        regs.clkcr().modify(|w| w.set_busspeed(true));
+
+        // 9. Settle. The clock just restarted and we just flipped
+        //    busspeed; empirically the very next CPSM command hangs
+        //    without a short delay. 1 ms is well above the internal
+        //    resync window.
+        embassy_time::Timer::after(Duration::from_millis(1)).await;
         Ok(())
     }
 
@@ -1217,6 +1678,7 @@ pub trait Instance: SealedInstance + PeripheralType + RccPeripheral + 'static {
 }
 
 pin_trait!(CkPin, Instance);
+pin_trait!(CkinPin, Instance);
 pin_trait!(CmdPin, Instance);
 pin_trait!(D0Pin, Instance);
 pin_trait!(D1Pin, Instance);
