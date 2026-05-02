@@ -1918,7 +1918,7 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
         return 0;
     };
 
-    slot.0.copy_from_slice(parse_data);
+    slot.0[..parse_data.len()].copy_from_slice(parse_data);
     slot.1 = parse_data.len();
     slot.send_done();
 
