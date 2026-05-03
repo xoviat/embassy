@@ -163,6 +163,13 @@ impl<'a, 'b> StorageDevice<'a, 'b, Card> {
             bus_width => bus_width,
         };
 
+        // Re-init must start from 3.3V / SDR12. After a successful UHS
+        // negotiation a previous `acquire` would have left the level
+        // shifter at 1.8V and `CLKCR.busspeed` / `CLKCR.selclkrx` set —
+        // a freshly inserted card would then see UHS timing at 400 kHz
+        // and fail CMD8. No-op outside `cfg(sdmmc_uhs)`.
+        self.sdmmc.reset_uhs_state();
+
         // While the SD/SDIO card or eMMC is in identification mode,
         // the SDMMC_CK frequency must be no more than 400 kHz.
         self.sdmmc.init_idle()?;
@@ -178,6 +185,13 @@ impl<'a, 'b> StorageDevice<'a, 'b, Card> {
             return Err(Error::UnsupportedVoltage);
         }
 
+        // Only request the 1.8V switch (S18A bit on ACMD41) when the
+        // host actually has a level-shifter pin to drive — otherwise
+        // a UHS-capable card may enter a partly-switched state when
+        // we never follow up with CMD11. v1/v2 builds always read
+        // `false` here (`has_vswitch` is hard-coded false).
+        let request_18v = self.sdmmc.has_vswitch();
+
         let ocr = loop {
             // Signal that next command is a app command
             self.sdmmc.cmd(common_cmd::app_cmd(0), true, false)?; // CMD55
@@ -188,7 +202,11 @@ impl<'a, 'b> StorageDevice<'a, 'b, Card> {
 
             let ocr: OCR<SD> = self
                 .sdmmc
-                .cmd(sd_cmd::sd_send_op_cond(true, false, true, voltage_window), false, false)?
+                .cmd(
+                    sd_cmd::sd_send_op_cond(true, false, request_18v, voltage_window),
+                    false,
+                    false,
+                )?
                 .into();
 
             if !ocr.is_busy() {
@@ -204,6 +222,23 @@ impl<'a, 'b> StorageDevice<'a, 'b, Card> {
             self.info.card_type = CardCapacity::StandardCapacity;
         }
         self.info.ocr = ocr;
+
+        // UHS-I voltage switch. Per SD Physical Layer Spec §3.7.5 the
+        // voltage switch must happen here — between ACMD41 (which
+        // moved the card to "ready" state) and CMD2 (which moves it
+        // to "identification" state). CMD11 is only honoured by the
+        // card while it's in the ready state. Doing the switch later
+        // (e.g. after CMD2/CMD3) makes CMD11 time out.
+        //
+        // Only attempt if BOTH the host has a level-shifter pin AND
+        // the card accepted the S18A request (ocr.v18_allowed()). On
+        // failure, fall through to 3.3V HS — `voltage_switch()`
+        // already restored peripheral + GPIO state.
+        #[cfg(sdmmc_uhs)]
+        if request_18v && ocr.v18_allowed() {
+            self.sdmmc.voltage_switch().await?;
+            info!("sdmmc: switched to UHS-I 1.8V signalling");
+        }
 
         self.info.cid = self.sdmmc.get_cid()?.into();
         let rca: RCA<SD> = self.sdmmc.cmd(sd_cmd::send_relative_address(), true, false)?.into();
@@ -228,11 +263,31 @@ impl<'a, 'b> StorageDevice<'a, 'b, Card> {
         self.info.status = self.read_sd_status(cmd_block).await?;
 
         if freq > mhz(25) {
-            // Switch to SDR25
-            let signalling = self.switch_signalling_mode(cmd_block, Signalling::SDR25).await?;
+            // Pick the highest applicable signalling mode. SDR50
+            // (≤100 MHz, 1.8V) is only attempted when the bus is
+            // already at UHS *and* the host owns a CKIN feedback
+            // pin, otherwise we cap at SDR25 = HS @ 3.3V (the same
+            // CMD6 function group ID 1 covers HS at 3.3V and SDR25
+            // at 1.8V — the host's signalling state selects which
+            // one the card honors). `uhs_active()` and `has_ckin()`
+            // both return `false` on non-`sdmmc_v3` builds, so the
+            // SDR25 branch is taken there with no extra cfg gates.
+            let target = if self.sdmmc.uhs_active() && self.sdmmc.has_ckin() && freq > mhz(50) {
+                Signalling::SDR50
+            } else {
+                Signalling::SDR25
+            };
 
-            if signalling == Signalling::SDR25 {
-                // Set final clock frequency
+            let signalling = self.switch_signalling_mode(cmd_block, target).await?;
+
+            if signalling == target {
+                // SDR50 needs CKIN feedback-clock sampling on the
+                // peripheral side; SDR25 does not. `set_feedback_clk`
+                // is a no-op on non-`sdmmc_v3` builds.
+                if signalling == Signalling::SDR50 {
+                    self.sdmmc.set_feedback_clk(true);
+                }
+                // Set final clock frequency.
                 self.sdmmc.clkcr_set_clkdiv(freq, bus_width)?;
 
                 let status: CardStatus<SD> = self.sdmmc.read_status(self.info.rca)?.into();

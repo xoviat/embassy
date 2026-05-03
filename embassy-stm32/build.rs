@@ -134,6 +134,19 @@ fn main() {
         cfgs.enable("backup_sram")
     }
 
+    // SDMMC v3 + `time` feature: enables UHS-I 1.8V signalling support.
+    // Used in lieu of `cfg(all(sdmmc_v3, feature = "time"))` to keep the
+    // SDMMC driver readable.
+    cfgs.declare("sdmmc_uhs");
+    let has_sdmmc_v3 = METADATA
+        .peripherals
+        .iter()
+        .filter_map(|p| p.registers.as_ref())
+        .any(|r| r.kind == "sdmmc" && r.version == "v3");
+    if has_sdmmc_v3 && env::var("CARGO_FEATURE_TIME").is_ok() {
+        cfgs.enable("sdmmc_uhs");
+    }
+
     // compile a map of peripherals with registers
     let peripheral_map: HashMap<&str, (&Peripheral, &PeripheralRegisters)> = METADATA
         .peripherals
@@ -1315,6 +1328,7 @@ fn main() {
         (("lptim", "CH2"), quote!(crate::lptim::Channel2Pin)),
         (("lptim", "OUT"), quote!(crate::lptim::OutputPin)),
         (("sdmmc", "CK"), quote!(crate::sdmmc::CkPin)),
+        (("sdmmc", "CKIN"), quote!(crate::sdmmc::CkinPin)),
         (("sdmmc", "CMD"), quote!(crate::sdmmc::CmdPin)),
         (("sdmmc", "D0"), quote!(crate::sdmmc::D0Pin)),
         (("sdmmc", "D1"), quote!(crate::sdmmc::D1Pin)),
