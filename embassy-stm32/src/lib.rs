@@ -120,6 +120,11 @@ pub mod i2c;
 pub mod i2s;
 #[cfg(any(stm32wb, stm32wl5x))]
 pub mod ipcc;
+// Limited to N6 for now — on H7 the metapac entry for JPEG has `rcc: None`
+// (no RccPeripheral impl is generated), and the DMA signal names differ
+// (INFIFO/OUTFIFO vs N6's RX/TX). Broaden once stm32-data is updated.
+#[cfg(all(jpeg, stm32n6))]
+pub mod jpeg;
 #[cfg(lcd)]
 pub mod lcd;
 #[cfg(feature = "low-power")]

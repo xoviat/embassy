@@ -1868,6 +1868,13 @@ fn main() {
         signals.insert(("adc", "ADC4"), quote!(crate::adc::RxDma));
     }
 
+    // JPEG HAL is currently N6-only; only emit dma_trait impls there.
+    // ST naming: jpeg_rx_dma = mem→peri (input), jpeg_tx_dma = peri→mem (output).
+    if chip_name.starts_with("stm32n6") {
+        signals.insert(("jpeg", "RX"), quote!(crate::jpeg::DmaIn));
+        signals.insert(("jpeg", "TX"), quote!(crate::jpeg::DmaOut));
+    }
+
     if chip_name.starts_with("stm32g4") {
         let line_number = chip_name.chars().skip(8).next().unwrap();
         if line_number == '3' || line_number == '4' {

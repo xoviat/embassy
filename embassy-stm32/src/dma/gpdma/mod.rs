@@ -62,6 +62,153 @@ impl From<Priority> for pac::gpdma::vals::Prio {
     }
 }
 
+/// GPDMA burst length (beats per burst on a port).
+///
+/// GPDMA hardware supports any integer burst length from 1 to 64 beats.
+/// Encoded as `TR1.SBL_1` / `TR1.DBL_1` (the register value is beats - 1).
+#[cfg(stm32n6)]
+#[allow(missing_docs)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Burst {
+    _1Beats,
+    _2Beats,
+    _3Beats,
+    _4Beats,
+    _5Beats,
+    _6Beats,
+    _7Beats,
+    _8Beats,
+    _9Beats,
+    _10Beats,
+    _11Beats,
+    _12Beats,
+    _13Beats,
+    _14Beats,
+    _15Beats,
+    _16Beats,
+    _17Beats,
+    _18Beats,
+    _19Beats,
+    _20Beats,
+    _21Beats,
+    _22Beats,
+    _23Beats,
+    _24Beats,
+    _25Beats,
+    _26Beats,
+    _27Beats,
+    _28Beats,
+    _29Beats,
+    _30Beats,
+    _31Beats,
+    _32Beats,
+    _33Beats,
+    _34Beats,
+    _35Beats,
+    _36Beats,
+    _37Beats,
+    _38Beats,
+    _39Beats,
+    _40Beats,
+    _41Beats,
+    _42Beats,
+    _43Beats,
+    _44Beats,
+    _45Beats,
+    _46Beats,
+    _47Beats,
+    _48Beats,
+    _49Beats,
+    _50Beats,
+    _51Beats,
+    _52Beats,
+    _53Beats,
+    _54Beats,
+    _55Beats,
+    _56Beats,
+    _57Beats,
+    _58Beats,
+    _59Beats,
+    _60Beats,
+    _61Beats,
+    _62Beats,
+    _63Beats,
+    _64Beats,
+}
+
+#[cfg(stm32n6)]
+impl From<Burst> for u8 {
+    fn from(b: Burst) -> u8 {
+        match b {
+            Burst::_1Beats => 0,
+            Burst::_2Beats => 1,
+            Burst::_3Beats => 2,
+            Burst::_4Beats => 3,
+            Burst::_5Beats => 4,
+            Burst::_6Beats => 5,
+            Burst::_7Beats => 6,
+            Burst::_8Beats => 7,
+            Burst::_9Beats => 8,
+            Burst::_10Beats => 9,
+            Burst::_11Beats => 10,
+            Burst::_12Beats => 11,
+            Burst::_13Beats => 12,
+            Burst::_14Beats => 13,
+            Burst::_15Beats => 14,
+            Burst::_16Beats => 15,
+            Burst::_17Beats => 16,
+            Burst::_18Beats => 17,
+            Burst::_19Beats => 18,
+            Burst::_20Beats => 19,
+            Burst::_21Beats => 20,
+            Burst::_22Beats => 21,
+            Burst::_23Beats => 22,
+            Burst::_24Beats => 23,
+            Burst::_25Beats => 24,
+            Burst::_26Beats => 25,
+            Burst::_27Beats => 26,
+            Burst::_28Beats => 27,
+            Burst::_29Beats => 28,
+            Burst::_30Beats => 29,
+            Burst::_31Beats => 30,
+            Burst::_32Beats => 31,
+            Burst::_33Beats => 32,
+            Burst::_34Beats => 33,
+            Burst::_35Beats => 34,
+            Burst::_36Beats => 35,
+            Burst::_37Beats => 36,
+            Burst::_38Beats => 37,
+            Burst::_39Beats => 38,
+            Burst::_40Beats => 39,
+            Burst::_41Beats => 40,
+            Burst::_42Beats => 41,
+            Burst::_43Beats => 42,
+            Burst::_44Beats => 43,
+            Burst::_45Beats => 44,
+            Burst::_46Beats => 45,
+            Burst::_47Beats => 46,
+            Burst::_48Beats => 47,
+            Burst::_49Beats => 48,
+            Burst::_50Beats => 49,
+            Burst::_51Beats => 50,
+            Burst::_52Beats => 51,
+            Burst::_53Beats => 52,
+            Burst::_54Beats => 53,
+            Burst::_55Beats => 54,
+            Burst::_56Beats => 55,
+            Burst::_57Beats => 56,
+            Burst::_58Beats => 57,
+            Burst::_59Beats => 58,
+            Burst::_60Beats => 59,
+            Burst::_61Beats => 60,
+            Burst::_62Beats => 61,
+            Burst::_63Beats => 62,
+            Burst::_64Beats => 63,
+        }
+    }
+}
+
 /// GPDMA transfer options.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -73,6 +220,18 @@ pub struct TransferOptions {
     pub half_transfer_ir: bool,
     /// Enable transfer complete interrupt.
     pub complete_transfer_ir: bool,
+    /// Issue source and destination AXI/AHB transactions with the secure
+    /// attribute set (`TR1.SSEC = TR1.DSEC = 1`). Required when the channel
+    /// is configured secure (`SECCFGR.SEC[n]=1`) and the slave is behind
+    /// RISAF — without this the channel hits `ULEF` (user setting error)
+    /// after partial progress. Default `false`.
+    #[cfg(stm32n6)]
+    pub secure: bool,
+    /// Burst length on both source and destination ports.
+    /// Default `Single`. Some peripherals (notably the JPEG codec on N6)
+    /// only assert their DMA request line for bursts above a threshold.
+    #[cfg(stm32n6)]
+    pub burst_length: Burst,
 }
 
 impl Default for TransferOptions {
@@ -81,6 +240,10 @@ impl Default for TransferOptions {
             priority: Priority::VeryHigh,
             half_transfer_ir: false,
             complete_transfer_ir: true,
+            #[cfg(stm32n6)]
+            secure: false,
+            #[cfg(stm32n6)]
+            burst_length: Burst::_1Beats,
         }
     }
 }
@@ -284,6 +447,14 @@ impl<'d> Channel<'d> {
                 Dir::PeripheralToMemory => vals::Ap::Port1, // Source is peripheral on AHB for HPDMA
                 Dir::MemoryToMemory => panic!("memory-to-memory transfers not implemented for GPDMA"),
             });
+            #[cfg(stm32n6)]
+            {
+                let bl: u8 = options.burst_length.into();
+                w.set_ssec(options.secure);
+                w.set_dsec(options.secure);
+                w.set_sbl_1(bl);
+                w.set_dbl_1(bl);
+            }
         });
         ch.tr2().write(|w| {
             w.set_dreq(match dir {

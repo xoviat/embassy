@@ -8,7 +8,7 @@ pub use stm32_metapac::rcc::vals::{
 };
 use stm32_metapac::syscfg::vals::{Vddio2cccrEn, Vddio3cccrEn, Vddio4cccrEn};
 
-use crate::pac::{PWR, RCC, RISAF3, SYSCFG};
+use crate::pac::{GPDMA1, HPDMA1, PWR, RCC, RIFSC, RISAF3, SYSCFG};
 use crate::time::Hertz;
 
 pub const HSI_FREQ: Hertz = Hertz(64_000_000);
@@ -1379,4 +1379,197 @@ pub(crate) unsafe fn init(config: Config) {
         ic19: clock_inputs.ic19,
         ic20: clock_inputs.ic20,
     );
+}
+
+// ===== RIFSC AXI-master promotion =====
+//
+// Without this, transactions from these masters hit RISAF with
+// `MCID=0, MSEC=0, MPRIV=0` and read back as zero (silent — no fault, no
+// log). Each helper writes `RIMC_ATTR[M] = {MCID=1, MSEC=1, MPRIV=1}` plus
+// the matching secure-guard RISUP entry per RM0486 §6.3.4 Table 22.
+//
+// Call these after [`embassy_stm32::init`] returns and after enabling any
+// SRAM clocks the masters will access. Doing the writes from inside
+// `init()` was observed to corrupt the LTDC framebuffer path, so it's
+// always an explicit step.
+//
+// HPDMA1/GPDMA1 are RIF-aware and configured via their own per-channel
+// SECCFGR/PRIVCFGR — they don't appear here.
+
+fn promote_master(master: usize, group: usize, bit: usize) {
+    RIFSC.risc_seccfgr(group).modify(|w| w.set_cfg(bit, true));
+    RIFSC.risc_privcfgr(group).modify(|w| w.set_cfg(bit, true));
+    RIFSC.rimc_attr(master).modify(|w| {
+        w.set_mcid(1);
+        w.set_msec(true);
+        w.set_mpriv(true);
+    });
+}
+
+/// Convenience wrapper: promote both DMA2D and LTDC (the LCD framebuffer path).
+/// Equivalent to calling [`promote_dma2d`] + [`promote_ltdc`].
+pub fn promote_axi_masters_to_secure() {
+    promote_dma2d();
+    promote_ltdc();
+}
+
+/// Promote SDMMC1 IDMA (M=2, RISUP=53).
+pub fn promote_sdmmc1() {
+    promote_master(2, 1, 21);
+}
+
+/// Promote SDMMC2 IDMA (M=3, RISUP=54).
+pub fn promote_sdmmc2() {
+    promote_master(3, 1, 22);
+}
+
+/// Promote OTG1 USB host/device controller (M=4, RISUP=56).
+pub fn promote_otg1() {
+    promote_master(4, 1, 24);
+}
+
+/// Promote OTG2 USB host/device controller (M=5, RISUP=57).
+pub fn promote_otg2() {
+    promote_master(5, 1, 25);
+}
+
+/// Promote the Ethernet GMAC (M=6, RISUP=60).
+pub fn promote_eth1() {
+    promote_master(6, 1, 28);
+}
+
+/// Promote DMA2D Chrom-ART (M=8, RISUP=101).
+pub fn promote_dma2d() {
+    promote_master(8, 3, 5);
+}
+
+/// Promote DCMIPP camera pipeline (M=9, RISUP=93).
+pub fn promote_dcmipp() {
+    promote_master(9, 2, 29);
+}
+
+/// Promote both LTDC layers (M=10/11, RISUP=103/104). The embassy LTDC driver
+/// always uses both layers from the same peripheral instance, so they're
+/// promoted together.
+pub fn promote_ltdc() {
+    promote_master(10, 3, 7);
+    promote_master(11, 3, 8);
+}
+
+// ===== HPDMA1 / GPDMA1 per-channel security =====
+//
+// Unlike the AXI bus masters above, HPDMA1 and GPDMA1 are RIF-aware and
+// configured locally via per-channel `SECCFGR.SEC[n]` and
+// `PRIVCFGR.PRIV[n]` bits — RM0486 §18 / §19. After reset both are 0
+// (non-secure / unprivileged), so DMA channels emit transactions that
+// RISAF rejects when the slave (peripheral register or memory region)
+// expects secure / privileged access. JPEG_DIR / JPEG_DOR is a known case:
+// IDMAEN is set, the peripheral asserts the request line, but the channel
+// transfers nothing because the bus access is silently filtered.
+//
+// `promote_*_channel(n)` flips a single channel; `promote_*_all()` flips
+// all 16. Either is fine to call once at boot — the bits don't affect
+// idle channels. Both controllers have 16 channels (0..16) on STM32N6.
+
+/// Promote a single HPDMA1 channel to secure + privileged.
+///
+/// Panics if `channel >= 16`.
+pub fn promote_hpdma1_channel(channel: usize) {
+    assert!(channel < 16, "HPDMA1 has 16 channels");
+    HPDMA1.seccfgr().modify(|w| w.set_sec(channel, true));
+    HPDMA1.privcfgr().modify(|w| w.set_priv_(channel, true));
+}
+
+/// Promote a single GPDMA1 channel to secure + privileged.
+///
+/// Panics if `channel >= 16`.
+pub fn promote_gpdma1_channel(channel: usize) {
+    assert!(channel < 16, "GPDMA1 has 16 channels");
+    GPDMA1.seccfgr().modify(|w| w.set_sec(channel, true));
+    GPDMA1.privcfgr().modify(|w| w.set_priv_(channel, true));
+}
+
+/// Promote all 16 HPDMA1 channels at once.
+pub fn promote_hpdma1_all() {
+    HPDMA1.seccfgr().modify(|w| {
+        for ch in 0..16 {
+            w.set_sec(ch, true);
+        }
+    });
+    HPDMA1.privcfgr().modify(|w| {
+        for ch in 0..16 {
+            w.set_priv_(ch, true);
+        }
+    });
+}
+
+/// Promote all 16 GPDMA1 channels at once.
+pub fn promote_gpdma1_all() {
+    GPDMA1.seccfgr().modify(|w| {
+        for ch in 0..16 {
+            w.set_sec(ch, true);
+        }
+    });
+    GPDMA1.privcfgr().modify(|w| {
+        for ch in 0..16 {
+            w.set_priv_(ch, true);
+        }
+    });
+}
+
+// ===== GPDMA / HPDMA per-channel CID isolation =====
+//
+// Beyond SECCFGR/PRIVCFGR (per-channel security/privilege) and TR1.SSEC/DSEC
+// (per-transaction secure on the bus), the GPDMA/HPDMA channels have their
+// own static CID configuration in the `CxCIDCFGR` register at channel
+// offset +0x04 (RM0486 §18.8.7). The metapac doesn't expose this register
+// for `gpdma_v1`, so we write it via raw pointer.
+//
+// `CxCIDCFGR.CFEN=1, SCID=1` makes the channel issue transactions with
+// CID=1, matching the static CID embassy_stm32::init configures via
+// RIFSC.RIMC for the AXI master peripherals. Without this, the channel's
+// CID stays at 0 (default after reset), and any RISAF / RIFSC slave that
+// requires CID=1 silently rejects the transaction.
+
+// CxCIDCFGR sits at offset +0x04 in each channel block. The metapac exposes
+// the channel block via `controller.ch(n).as_ptr()` but doesn't generate a
+// register accessor for CIDCFGR on `gpdma_v1`, so we write it via raw pointer
+// from the channel base.
+const CIDCFGR_OFFSET_IN_CHANNEL: usize = 0x04;
+const CIDCFGR_CFEN: u32 = 1 << 0;
+const CIDCFGR_SCID_CID1: u32 = 1 << 4;
+
+unsafe fn write_channel_cidcfgr(controller: crate::pac::gpdma::Gpdma, channel: usize) {
+    let addr = (controller.ch(channel).as_ptr() as usize) + CIDCFGR_OFFSET_IN_CHANNEL;
+    (addr as *mut u32).write_volatile(CIDCFGR_CFEN | CIDCFGR_SCID_CID1);
+}
+
+/// Set HPDMA1 channel `channel`'s CID to 1 with filtering enabled. Required
+/// for the channel to be allowed to issue transactions to RISAF-protected
+/// peripherals like JPEG.
+///
+/// Panics if `channel >= 16`.
+pub fn promote_hpdma1_channel_cid(channel: usize) {
+    unsafe { write_channel_cidcfgr(HPDMA1, channel) };
+}
+
+/// Set GPDMA1 channel `channel`'s CID to 1 with filtering enabled.
+///
+/// Panics if `channel >= 16`.
+pub fn promote_gpdma1_channel_cid(channel: usize) {
+    unsafe { write_channel_cidcfgr(GPDMA1, channel) };
+}
+
+/// Set CID=1 + filtering on all 16 HPDMA1 channels.
+pub fn promote_hpdma1_all_cid() {
+    for ch in 0..16 {
+        unsafe { write_channel_cidcfgr(HPDMA1, ch) };
+    }
+}
+
+/// Set CID=1 + filtering on all 16 GPDMA1 channels.
+pub fn promote_gpdma1_all_cid() {
+    for ch in 0..16 {
+        unsafe { write_channel_cidcfgr(GPDMA1, ch) };
+    }
 }
