@@ -184,7 +184,7 @@ impl<'a> IpccTxChannel<'a> {
             .read()
             .chf(self.index as usize)
         {
-            trace!("ipcc: ch {}: wait for rx clear", self.index as u8);
+            trace!("ipcc: ch {}: wait for rx clear", self.index + 1);
 
             poll_fn(|cx| {
                 IPCC::state().rx_waker_for(self.index).register(cx.waker());
@@ -208,7 +208,7 @@ impl<'a> IpccTxChannel<'a> {
         let ret = f();
         fence(Ordering::Release);
 
-        trace!("ipcc: ch {}: send data", self.index as u8);
+        trace!("ipcc: ch {}: send data", self.index + 1);
         regs.cpu(core.to_index().into())
             .scr()
             .write(|w| w.set_chs(self.index as usize, true));
@@ -226,7 +226,7 @@ impl<'a> IpccTxChannel<'a> {
         let ret = f();
         fence(Ordering::Release);
 
-        trace!("ipcc: ch {}: send data", self.index as u8);
+        trace!("ipcc: ch {}: send data", self.index + 1);
         regs.cpu(core.to_index().into())
             .scr()
             .write(|w| w.set_chs(self.index as usize, true));
@@ -242,7 +242,7 @@ impl<'a> IpccTxChannel<'a> {
 
         // This is a race, but is nice for debugging
         if regs.cpu(core.to_index().into()).sr().read().chf(self.index as usize) {
-            trace!("ipcc: ch {}: wait for tx free", self.index as u8);
+            trace!("ipcc: ch {}: wait for tx free", self.index + 1);
         } else {
             return;
         }
@@ -307,10 +307,25 @@ impl<'a> IpccRxChannel<'a> {
         }
     }
 
+    /// Clear the channel to receive more data
+    pub fn clear(&mut self) {
+        let regs = IPCC::regs();
+        let core = CoreId::current();
+
+        trace!("ipcc: ch {}: clear rx", self.index + 1);
+
+        // If the channel is clear and the read function returns none, fetch more data
+        regs.cpu(core.to_index().into())
+            .scr()
+            .write(|w| w.set_chc(self.index as usize, true));
+
+        IPCC::state().rx_waker_for(self.index).wake();
+    }
+
     /// Receive data from an IPCC channel. The closure is called to read the data when appropriate.
     ///
-    /// `close` determines whether the channel will be open for receiving more data, or not after data is read.
-    pub async fn receive<R>(&mut self, mut f: impl FnMut() -> Option<R>, close: bool) -> R {
+    /// `clear` determines whether the channel will fetch more data, even if some is returned.
+    pub async fn receive<R>(&mut self, mut f: impl FnMut() -> Option<R>, clear: bool) -> R {
         let _scoped_wake_guard = IPCC::RCC_INFO.wake_guard();
         let regs = IPCC::regs();
         let core = CoreId::current();
@@ -322,7 +337,7 @@ impl<'a> IpccRxChannel<'a> {
                 .read()
                 .chf(self.index as usize)
             {
-                trace!("ipcc: ch {}: wait for rx occupied", self.index as u8);
+                trace!("ipcc: ch {}: wait for rx occupied", self.index + 1);
 
                 let _irq = ActiveRxInterrupt::new(core, self.index);
                 poll_fn(|cx| {
@@ -344,17 +359,16 @@ impl<'a> IpccRxChannel<'a> {
                 .await;
             }
 
-            trace!("ipcc: ch {}: read data", self.index as u8);
+            trace!("ipcc: ch {}: read data", self.index + 1);
 
             fence(Ordering::Acquire);
             let ret = f();
 
-            trace!("ipcc: ch {}: clear rx", self.index as u8);
             compiler_fence(Ordering::SeqCst);
-            // If the channel is clear and the read function returns none, fetch more data
-            regs.cpu(core.to_index().into())
-                .scr()
-                .write(|w| w.set_chc(self.index as usize, ret.is_none() || !close));
+            if ret.is_none() || clear {
+                self.clear();
+            }
+
             match ret {
                 Some(ret) => return ret,
                 None => {}
@@ -459,10 +473,17 @@ impl Ipcc {
     }
 
     /// Receive from a channel number
-    pub async unsafe fn receive<R>(number: u8, f: impl FnMut() -> Option<R>, close: bool) -> R {
+    pub async unsafe fn receive<R>(number: u8, f: impl FnMut() -> Option<R>, clear: bool) -> R {
         core::assert!(number > 0 && number <= 6);
 
-        IpccRxChannel::new(number - 1).receive(f, close).await
+        IpccRxChannel::new(number - 1).receive(f, clear).await
+    }
+
+    /// Receive from a channel number
+    pub unsafe fn clear(number: u8) {
+        core::assert!(number > 0 && number <= 6);
+
+        IpccRxChannel::new(number - 1).clear();
     }
 
     /// Send to a channel number

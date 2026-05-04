@@ -4,15 +4,13 @@ use core::cell::RefCell;
 use core::future::poll_fn;
 use core::ptr;
 
-#[cfg(feature = "bt-hci")]
-use embassy_futures::poll_once;
-use embassy_stm32::ipcc::{IpccRxChannel, IpccTxChannel};
+use embassy_stm32::ipcc::{Ipcc, IpccRxChannel, IpccTxChannel};
 #[cfg(feature = "bt-hci")]
 use embassy_sync::blocking_mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(feature = "bt-hci")]
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::mutex::{Mutex, MutexGuard};
+#[cfg(feature = "bt-hci")]
+use embassy_sync::mutex::Mutex;
 #[cfg(feature = "bt-hci")]
 use embassy_sync::signal::Signal;
 #[cfg(feature = "bt-hci")]
@@ -21,6 +19,7 @@ use embassy_sync::waitqueue::AtomicWaker;
 use futures_intrusive::sync::LocalSemaphore;
 use hci::Opcode;
 
+use crate::channels::cpu1::IPCC_HCI_ACL_DATA_CHANNEL;
 use crate::cmd::CmdPacket;
 use crate::consts::{TL_BLEEVT_CC_OPCODE, TL_BLEEVT_CS_OPCODE, TlPacketType};
 use crate::evt;
@@ -31,12 +30,6 @@ use crate::unsafe_linked_list::LinkedListNode;
 use crate::wb::Flag;
 
 static ACL_EVT_OUT: Flag = Flag::new(false);
-static ACL_MUTEX: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
-
-async fn lock_acl() -> MutexGuard<'static, CriticalSectionRawMutex, ()> {
-    ACL_EVT_OUT.wait_for_low().await;
-    ACL_MUTEX.lock().await
-}
 
 /// A guard that, once constructed, may be used to send BLE commands to CPU2.
 ///
@@ -154,10 +147,8 @@ impl<'a> Ble<'a> {
 
     /// `TL_BLE_SendAclData`
     pub async fn acl_write(&mut self, handle: u16, payload: &[u8]) {
-        let _guard = lock_acl().await;
-
         self.ipcc_hci_acl_tx_data_channel
-            .send(|| unsafe {
+            .send_exclusive(|| unsafe {
                 CmdPacket::write_into(
                     HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _,
                     TlPacketType::AclData,
@@ -170,18 +161,15 @@ impl<'a> Ble<'a> {
 
     /// `TL_BLE_AclNot`
     pub async fn acl_read(&mut self) -> EvtBox<Self> {
-        let _guard = lock_acl().await;
-
+        ACL_EVT_OUT.wait_for_low().await;
         self.ipcc_hci_acl_rx_data_channel
             .receive(
                 || unsafe {
-                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
-                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
                     ACL_EVT_OUT.set_high();
 
                     Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
                 },
-                true,
+                false,
             )
             .await
     }
@@ -191,6 +179,7 @@ impl<'a> evt::MemoryManager for Ble<'a> {
     /// SAFETY: passing a pointer to something other than a managed event packet is UB
     unsafe fn drop_event_packet(evt: *mut EvtPacket) {
         if ptr::eq(evt, HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _) {
+            Ipcc::clear(IPCC_HCI_ACL_DATA_CHANNEL as u8);
             ACL_EVT_OUT.set_low();
 
             return;
@@ -269,18 +258,15 @@ impl<'a> BleRx<'a> {
 
     /// `TL_BLE_AclNot`
     pub async fn acl_read(&mut self) -> EvtBox<Ble<'a>> {
-        let _guard = lock_acl().await;
-
+        ACL_EVT_OUT.wait_for_low().await;
         self.ipcc_hci_acl_rx_data_channel
             .receive(
                 || unsafe {
-                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
-                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
                     ACL_EVT_OUT.set_high();
 
                     Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
                 },
-                true,
+                false,
             )
             .await
     }
@@ -517,7 +503,7 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
             async {
                 let mut channel = self.ipcc_hci_acl_rx_data_channel.lock().await;
 
-                let ret = channel
+                channel
                     .receive(
                         || unsafe {
                             // We must copy out the event immediately so that it is not trashed by a pending command.
@@ -527,6 +513,8 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
                             let serial = evt.serial();
                             buf[..serial.len()].copy_from_slice(serial);
 
+                            // rx will be cleared by evt box drop
+
                             Some(
                                 ControllerToHostPacket::from_hci_bytes(buf)
                                     .map(|(pkt, _)| pkt)
@@ -535,11 +523,7 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
                         },
                         false,
                     )
-                    .await;
-
-                let _ = poll_once(channel.receive::<()>(|| None, false));
-
-                ret
+                    .await
             },
         )
         .await
