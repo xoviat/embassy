@@ -1902,7 +1902,7 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
 
     // Schedule BLE host task processing after disconnect so the runner wakes
     if evt_code == 0x05 {
-        super::runner::schedule_ble_host_task();
+        util_seq::UTIL_SEQ_SetTask(TASK_BLE_HOST_MASK, TASK_PRIO_BLE_HOST);
     }
 
     // Parse and queue the event for processing.
@@ -1922,7 +1922,7 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
     slot.1 = parse_data.len();
     slot.send_done();
 
-    super::runner::schedule_ble_host_task();
+    util_seq::UTIL_SEQ_SetTask(TASK_BLE_HOST_MASK, TASK_PRIO_BLE_HOST);
 
     0 // Success
 }

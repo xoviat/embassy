@@ -24,7 +24,7 @@ use crate::host_if::{MAX_BLE_PKT_SIZE, TASK_BLE_HOST_MASK, TASK_LINK_LAYER_MASK,
 use crate::linklayer_plat::{
     EVENT_CHANNEL, HARDWARE_AES, HARDWARE_PKA, HARDWARE_RNG, run_radio_high_isr, run_radio_sw_low_isr,
 };
-use crate::runner::{BLE_INIT, BLE_INIT_WAKER, BLE_SLEEPMODE_RUNNING, schedule_ble_host_task};
+use crate::runner::{BLE_INIT, BLE_INIT_WAKER, BLE_SLEEPMODE_RUNNING};
 use crate::util_seq;
 use crate::wba::ll_sys::init_ble_stack;
 
@@ -121,7 +121,7 @@ impl Controller {
         // Schedule the initial tasks and kick the BLE stack.
         // BLE init and GAP setup happened before the runner started, so there may be
         // pending HCI commands that need BleStack_Process to deliver them to the LL.
-        schedule_ble_host_task();
+        util_seq::UTIL_SEQ_SetTask(TASK_BLE_HOST_MASK, TASK_PRIO_BLE_HOST);
         util_seq::UTIL_SEQ_SetTask(TASK_LINK_LAYER_MASK, 0);
         util_seq::seq_resume();
 

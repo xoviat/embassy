@@ -88,7 +88,7 @@ pub unsafe extern "C" fn HostStack_Process() {
 
     // Schedule BLE Host task to process events (matches ST's BleStackCB_Process)
     // This is CRITICAL - it's what keeps BleStack_Process running!
-    crate::wba::runner::schedule_ble_host_task();
+    util_seq::UTIL_SEQ_SetTask(TASK_BLE_HOST_MASK, TASK_PRIO_BLE_HOST);
 }
 
 // Note: For WBA, the callback mechanism above is the primary event delivery method.
