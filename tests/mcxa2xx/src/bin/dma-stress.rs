@@ -31,6 +31,8 @@
 #![no_std]
 #![no_main]
 
+teleprobe_meta::target!(b"frdm-mcx-a266");
+
 use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_mcxa::dma::{DmaChannel, InvalidParameters, TransferOptions};
