@@ -1,4 +1,5 @@
 *.cortex-debug.*.json
 launch.json
 tasks.json
+settings.json
 *.cfg
