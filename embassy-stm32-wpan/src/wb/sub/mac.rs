@@ -1,8 +1,8 @@
 use core::ptr;
 
-use embassy_futures::poll_once;
 use embassy_stm32::ipcc::{Ipcc, IpccRxChannel, IpccTxChannel};
 
+use crate::channels::cpu1::IPCC_MAC_802_15_4_CMD_RSP_CHANNEL;
 use crate::cmd::CmdPacket;
 use crate::consts::TlPacketType;
 use crate::evt::{EvtBox, EvtPacket};
@@ -117,28 +117,24 @@ impl<'a> MacRx<'a> {
     ///
     /// This function will stall if the previous `EvtBox` has not been dropped
     pub async fn read(&mut self) -> Result<MacEvent<'a>, ()> {
-        // Wait for the last event box to be dropped
         MAC_EVT_OUT.wait_for_low().await;
 
         // Return a new event box
         self.ipcc_mac_802_15_4_notification_ack_channel
             .receive(
                 || unsafe {
-                    // The closure is not async, therefore the closure must execute to completion (cannot be dropped)
-                    // Therefore, the event box is guaranteed to be cleaned up if it's not leaked
                     MAC_EVT_OUT.set_high();
 
                     Some(MacEvent::new(EvtBox::new(
                         MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
                     )))
                 },
-                true,
+                false,
             )
             .await
     }
 }
 
-/// SAFETY: passing a pointer to something other than a managed event packet is UB
 pub(crate) unsafe fn drop_mac_event() {
     trace!("mac drop event");
 
@@ -151,8 +147,6 @@ pub(crate) unsafe fn drop_mac_event() {
     );
 
     // Clear the rx flag
-    let _ = poll_once(Ipcc::receive::<()>(3, || None, false));
-
-    // Allow a new read call
+    Ipcc::clear(IPCC_MAC_802_15_4_CMD_RSP_CHANNEL as u8);
     MAC_EVT_OUT.set_low();
 }
