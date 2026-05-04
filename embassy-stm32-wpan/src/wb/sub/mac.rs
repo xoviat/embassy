@@ -121,16 +121,13 @@ impl<'a> MacRx<'a> {
 
         // Return a new event box
         self.ipcc_mac_802_15_4_notification_ack_channel
-            .receive(
-                || unsafe {
-                    MAC_EVT_OUT.set_high();
+            .receive(|| unsafe {
+                MAC_EVT_OUT.set_high();
 
-                    Some(MacEvent::new(EvtBox::new(
-                        MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
-                    )))
-                },
-                false,
-            )
+                Some(MacEvent::new(EvtBox::new(
+                    MAC_802_15_4_NOTIF_RSP_EVT_BUFFER.as_mut_ptr() as *mut _,
+                )))
+            })
             .await
     }
 }

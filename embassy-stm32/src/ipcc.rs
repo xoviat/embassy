@@ -323,9 +323,7 @@ impl<'a> IpccRxChannel<'a> {
     }
 
     /// Receive data from an IPCC channel. The closure is called to read the data when appropriate.
-    ///
-    /// `clear` determines whether the channel will fetch more data, even if some is returned.
-    pub async fn receive<R>(&mut self, mut f: impl FnMut() -> Option<R>, clear: bool) -> R {
+    pub async fn receive<R>(&mut self, mut f: impl FnMut() -> Option<R>) -> R {
         let _scoped_wake_guard = IPCC::RCC_INFO.wake_guard();
         let regs = IPCC::regs();
         let core = CoreId::current();
@@ -365,7 +363,7 @@ impl<'a> IpccRxChannel<'a> {
             let ret = f();
 
             compiler_fence(Ordering::SeqCst);
-            if ret.is_none() || clear {
+            if ret.is_none() {
                 self.clear();
             }
 
@@ -473,10 +471,10 @@ impl Ipcc {
     }
 
     /// Receive from a channel number
-    pub async unsafe fn receive<R>(number: u8, f: impl FnMut() -> Option<R>, clear: bool) -> R {
+    pub async unsafe fn receive<R>(number: u8, f: impl FnMut() -> Option<R>) -> R {
         core::assert!(number > 0 && number <= 6);
 
-        IpccRxChannel::new(number - 1).receive(f, clear).await
+        IpccRxChannel::new(number - 1).receive(f).await
     }
 
     /// Receive from a channel number
