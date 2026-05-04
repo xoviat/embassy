@@ -50,10 +50,10 @@ use crate::controller::Controller;
 /// }
 /// ```
 pub struct Ble {
+    controller: Controller,
     cmd_sender: CommandSender,
     connections: ConnectionManager<MAX_CONNECTIONS>,
     is_advertising: bool,
-    controller: Controller,
 }
 
 impl Ble {
@@ -230,18 +230,18 @@ impl Ble {
     /// Performs the minimum initialization required before issuing DTM commands
     /// (HCI_LE_Transmitter_Test, HCI_LE_Receiver_Test, HCI_LE_Test_End).
     /// Does not initialize GATT or GAP — those layers are not used in DTM.
-    //    pub fn new_dtm(controller: Controller) -> Result<Self, BleError> {
-    //        let mut this = Self {
-    //            cmd_sender: CommandSender::new(),
-    //            connections: ConnectionManager::new(),
-    //            is_advertising: false,
-    //            controller,
-    //        };
-    //
-    //        this.dtm_init()?;
-    //
-    //        Ok(this)
-    //    }
+    pub fn new_dtm(controller: Controller) -> Result<Self, BleError> {
+        let mut this = Self {
+            cmd_sender: CommandSender::new(),
+            connections: ConnectionManager::new(),
+            is_advertising: false,
+            controller,
+        };
+
+        this.dtm_init()?;
+
+        Ok(this)
+    }
 
     /// Initialize the BLE stack for Direct Test Mode (DTM) only.
     ///
