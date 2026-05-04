@@ -121,18 +121,15 @@ impl<'a> Ble<'a> {
     /// `HW_IPCC_BLE_EvtNot`
     pub async fn tl_read(&mut self) -> EvtBox<Self> {
         self.ipcc_ble_event_channel
-            .receive(
-                || unsafe {
-                    if let Some(node_ptr) =
-                        critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                    {
-                        Some(EvtBox::new(node_ptr.cast()))
-                    } else {
-                        None
-                    }
-                },
-                false,
-            )
+            .receive(|| unsafe {
+                if let Some(node_ptr) =
+                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                {
+                    Some(EvtBox::new(node_ptr.cast()))
+                } else {
+                    None
+                }
+            })
             .await
     }
 
@@ -163,14 +160,11 @@ impl<'a> Ble<'a> {
     pub async fn acl_read(&mut self) -> EvtBox<Self> {
         ACL_EVT_OUT.wait_for_low().await;
         self.ipcc_hci_acl_rx_data_channel
-            .receive(
-                || unsafe {
-                    ACL_EVT_OUT.set_high();
+            .receive(|| unsafe {
+                ACL_EVT_OUT.set_high();
 
-                    Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
-                },
-                false,
-            )
+                Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
+            })
             .await
     }
 }
@@ -241,18 +235,15 @@ impl<'a> BleRx<'a> {
     /// `HW_IPCC_BLE_EvtNot`
     pub async fn tl_read(&mut self) -> EvtBox<Ble<'a>> {
         self.ipcc_ble_event_channel
-            .receive(
-                || unsafe {
-                    if let Some(node_ptr) =
-                        critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                    {
-                        Some(EvtBox::new(node_ptr.cast()))
-                    } else {
-                        None
-                    }
-                },
-                false,
-            )
+            .receive(|| unsafe {
+                if let Some(node_ptr) =
+                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                {
+                    Some(EvtBox::new(node_ptr.cast()))
+                } else {
+                    None
+                }
+            })
             .await
     }
 
@@ -260,14 +251,11 @@ impl<'a> BleRx<'a> {
     pub async fn acl_read(&mut self) -> EvtBox<Ble<'a>> {
         ACL_EVT_OUT.wait_for_low().await;
         self.ipcc_hci_acl_rx_data_channel
-            .receive(
-                || unsafe {
-                    ACL_EVT_OUT.set_high();
+            .receive(|| unsafe {
+                ACL_EVT_OUT.set_high();
 
-                    Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
-                },
-                false,
-            )
+                Some(EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _))
+            })
             .await
     }
 }
@@ -455,18 +443,15 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
                         .ipcc_ble_event_channel
                         .lock()
                         .await
-                        .receive(
-                            || unsafe {
-                                if let Some(node_ptr) =
-                                    critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
-                                {
-                                    Some(EvtBox::new(node_ptr.cast()))
-                                } else {
-                                    None
-                                }
-                            },
-                            false,
-                        )
+                        .receive(|| unsafe {
+                            if let Some(node_ptr) =
+                                critical_section::with(|cs| LinkedListNode::remove_head(cs, EVT_QUEUE.as_mut_ptr()))
+                            {
+                                Some(EvtBox::new(node_ptr.cast()))
+                            } else {
+                                None
+                            }
+                        })
                         .await;
 
                     let (pkt, _) = ControllerToHostPacket::from_hci_bytes(&evt.serial()).map_err(to_err)?;
@@ -504,25 +489,22 @@ impl<'d> bt_hci::controller::Controller for AtomicController<'d> {
                 let mut channel = self.ipcc_hci_acl_rx_data_channel.lock().await;
 
                 channel
-                    .receive(
-                        || unsafe {
-                            // We must copy out the event immediately so that it is not trashed by a pending command.
+                    .receive(|| unsafe {
+                        // We must copy out the event immediately so that it is not trashed by a pending command.
 
-                            let buf = core::slice::from_raw_parts_mut(buf as *mut _ as *mut u8, buf.len());
-                            let evt: EvtBox<Ble<'d>> = EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _);
-                            let serial = evt.serial();
-                            buf[..serial.len()].copy_from_slice(serial);
+                        let buf = core::slice::from_raw_parts_mut(buf as *mut _ as *mut u8, buf.len());
+                        let evt: EvtBox<Ble<'d>> = EvtBox::new(HCI_ACL_DATA_BUFFER.as_mut_ptr() as *mut _);
+                        let serial = evt.serial();
+                        buf[..serial.len()].copy_from_slice(serial);
 
-                            // rx will be cleared by evt box drop
+                        // rx will be cleared by evt box drop
 
-                            Some(
-                                ControllerToHostPacket::from_hci_bytes(buf)
-                                    .map(|(pkt, _)| pkt)
-                                    .map_err(to_err),
-                            )
-                        },
-                        false,
-                    )
+                        Some(
+                            ControllerToHostPacket::from_hci_bytes(buf)
+                                .map(|(pkt, _)| pkt)
+                                .map_err(to_err),
+                        )
+                    })
                     .await
             },
         )
