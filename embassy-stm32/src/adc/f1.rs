@@ -125,10 +125,10 @@ impl AdcRegs for crate::pac::adc::Adc {
             }
 
             let sample_time = sample_time.into();
-            if ch <= 9 {
-                smpr1.set_smp(ch as _, sample_time);
+            if ch < 8 {
+                smpr1.set_smp(ch as usize, sample_time);
             } else {
-                smpr2.set_smp((ch - 10) as _, sample_time);
+                smpr2.set_smp(ch as usize - 8, sample_time);
             }
         }
 
