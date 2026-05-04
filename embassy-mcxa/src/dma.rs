@@ -1456,21 +1456,28 @@ impl<'a> Transfer<'a> {
                 w.set_earq(false);
             });
 
-            // 2. Wait for any in-flight minor loop / SW-triggered transfer
-            //    to drain. Bounded by the size of one minor loop / SW
-            //    transfer this driver issues (microseconds at most).
-            while t.ch_csr().read().active() {
-                core::hint::spin_loop();
-            }
+            // 2. Mask interrupts so we don't have to worry about the
+            // IRQ firing while we're in the middle of the shutdown
+            // sequence.
+            t.tcd_csr().modify(|w| {
+                w.set_intmajor(false);
+                w.set_inthalf(false)
+            });
 
-            // 3. Clear completion bookkeeping (W1C).
-            t.ch_int().write(|w| w.set_int(true));
-            t.ch_csr().modify(|w| w.set_done(true));
-
-            // 4. Drop any IRQ the hardware queued in the NVIC while we
+            // 3. Drop any IRQ the hardware queued in the NVIC while we
             //    were masked.
             cortex_m::peripheral::NVIC::unpend(irq);
         });
+
+        // 4. Wait for any in-flight minor loop / SW-triggered transfer
+        //    to drain. Bounded by the size of one minor loop / SW
+        //    transfer this driver issues (microseconds at most).
+        while t.ch_csr().read().active() {
+            core::hint::spin_loop();
+        }
+
+        // 5. Clear completion bookkeeping (W1C).
+        t.ch_int().write(|w| w.set_int(true));
 
         fence(Ordering::SeqCst);
     }
