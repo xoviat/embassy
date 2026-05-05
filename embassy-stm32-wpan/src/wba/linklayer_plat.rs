@@ -359,7 +359,7 @@ pub fn check_expired_timers() {
     unsafe {
         for (id, deadline) in TIMER_SLOTS
             .iter_mut()
-            .filter(|(id, deadline)| *id != TIMER_SLOT_FREE && *deadline >= now)
+            .filter(|(id, deadline)| *id != TIMER_SLOT_FREE &&  now >= *deadline)
         {
             timer_id = *id;
             *id = TIMER_SLOT_FREE;
