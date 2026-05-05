@@ -51,13 +51,14 @@ async fn main(spawner: Spawner) {
     info!("Hello World!");
 
     let config = Config::default();
-    let mbox = TlMbox::init(p.IPCC, Irqs, config);
-    let mut sys = mbox.sys_subsystem;
+    let (_mac, mm) = TlMbox::wait_ready(p.IPCC, Irqs, config)
+        .await
+        .unwrap()
+        .init_mac()
+        .await
+        .unwrap();
 
-    spawner.spawn(run_mm_queue(mbox.mm_subsystem).unwrap());
-
-    let result = sys.shci_c2_mac_802_15_4_init().await;
-    info!("initialized mac: {}", result);
+    spawner.spawn(run_mm_queue(mm).unwrap());
 
     //
     //    info!("starting ble...");
