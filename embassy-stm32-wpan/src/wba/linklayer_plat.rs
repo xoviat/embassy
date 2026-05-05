@@ -359,7 +359,7 @@ pub fn check_expired_timers() {
     unsafe {
         for (id, deadline) in TIMER_SLOTS
             .iter_mut()
-            .filter(|(id, deadline)| *id != TIMER_SLOT_FREE &&  now >= *deadline)
+            .filter(|(id, deadline)| *id != TIMER_SLOT_FREE && now >= *deadline)
         {
             timer_id = *id;
             *id = TIMER_SLOT_FREE;
@@ -1892,7 +1892,6 @@ pub unsafe extern "C" fn BLECB_Indication(data: *const u8, length: u16, _ext_dat
     } else {
         info!("HCI Event: code=0x{:02X}, len={}", evt_code, length);
     }
-
 
     let Some(mut slot) = unsafe { EVENT_CHANNEL.as_mut() }.unwrap().try_send() else {
         return 0;
