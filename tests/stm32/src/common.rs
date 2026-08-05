@@ -1,13 +1,12 @@
 #![macro_use]
 
 pub use defmt::*;
-use defmt_rtt as _;
 use embassy_stm32::Config;
 #[allow(unused)]
 use embassy_stm32::rcc::*;
 #[allow(unused)]
 use embassy_stm32::time::Hertz;
-use panic_probe as _;
+use {defmt_rtt as _, panic_probe as _};
 
 #[cfg(feature = "stm32f103c8")]
 teleprobe_meta::target!(b"bluepill-stm32f103c8");
@@ -162,6 +161,7 @@ define_peris!(
     SPI = SPI1, SPI_SCK = PA5, SPI_MOSI = PA7, SPI_MISO = PA6, SPI_TX_DMA = DMA2_CH3, SPI_RX_DMA = DMA2_CH2,
     ADC = ADC1, DAC = DAC1, DAC_PIN = PA4,
     CAN = CAN1, CAN_RX = PD0, CAN_TX = PD1,
+    TIM_W = TIM2, TIM_R = TIM3, DMA_W = DMA1_STREAM0, DMA_R = DMA1_STREAM1,
     @irq UART = {
         USART6 => embassy_stm32::usart::InterruptHandler<embassy_stm32::peripherals::USART6>,
             embassy_stm32::usart::BufferedInterruptHandler<embassy_stm32::peripherals::USART6>;

@@ -153,6 +153,11 @@ path = "src/bin/dac_l1.rs"
 required-features = [ "stm32l152re",]
 
 [[bin]]
+name = "dma_ringbuffer"
+path = "src/bin/dma_ringbuffer.rs"
+required-features = []
+
+[[bin]]
 name = "eeprom"
 path = "src/bin/eeprom.rs"
 required-features = [ "eeprom",]
