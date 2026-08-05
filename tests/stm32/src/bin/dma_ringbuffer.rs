@@ -8,8 +8,8 @@ use embassy_executor::Spawner;
 use embassy_stm32::Peri;
 use embassy_stm32::dma::{Channel, Priority, ReadableRingBuffer, TransferOptions, WritableRingBuffer};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::timer::GeneralInstance4Channel;
 use embassy_stm32::timer::low_level::{RoundTo, Timer};
+use embassy_stm32::timer::{GeneralInstance4Channel, UpDma};
 use embassy_time::{Duration, Instant, Timer as AsyncTimer};
 
 const RB_SIZE: usize = 64;
@@ -85,7 +85,7 @@ fn wopts() -> TransferOptions {
 }
 
 fn setup_timer<T: GeneralInstance4Channel>(tim: &mut Timer<'static, T>) {
-    tim.set_frequency(Hertz(TIMER_FREQ), RoundTo::Closest);
+    tim.set_frequency(Hertz(TIMER_FREQ), RoundTo::Faster);
     tim.set_counting_mode(embassy_stm32::timer::low_level::CountingMode::EdgeAlignedUp);
     tim.enable_outputs();
     tim.start();
@@ -107,11 +107,11 @@ async fn wait_for<F: FnMut() -> bool>(mut f: F, timeout_us: u64) {
 
 async fn test_writable_basic(tim: Peri<'static, peris::TIM_W>, dma: Peri<'static, peris::DMA_W>) {
     let mut tim = Timer::new(tim);
-    let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
+    let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
     let mut dma_buf = [0 as Word; RB_SIZE];
 
     let req = dma.request();
-    let mut ch = Channel::new(dma, irqs!(UART));
+    let mut ch = Channel::new(dma, irqs!(DMA));
 
     setup_timer(&mut tim);
     tim.enable_update_dma(true);
@@ -155,7 +155,7 @@ async fn test_readable_basic(tim: Peri<'static, peris::TIM_R>, dma: Peri<'static
     let mut dma_buf = [0 as Word; RB_SIZE];
 
     let req = dma.request();
-    let mut ch = Channel::new(dma, irqs!(UART));
+    let mut ch = Channel::new(dma, irqs!(DMA));
 
     setup_timer(&mut tim);
     tim.enable_update_dma(true);
@@ -202,10 +202,10 @@ async fn test_wraparound(
     const SMALL: usize = 16;
 
     let mut tim_w = Timer::new(tim_w);
-    let ccr_addr = tim_w.regs().ccr(0).as_ptr() as *mut Word;
+    let ccr_addr = tim_w.regs_gp16().ccr(0).as_ptr() as *mut Word;
     let mut buf_w = [0 as Word; SMALL];
     let req_w = dma_w.request();
-    let mut ch_w = Channel::new(dma_w, irqs!(UART));
+    let mut ch_w = Channel::new(dma_w, irqs!(DMA));
     setup_timer(&mut tim_w);
     tim_w.enable_update_dma(true);
     let mut rb_w = unsafe { WritableRingBuffer::new(ch_w.reborrow(), req_w, ccr_addr, &mut buf_w, wopts()) };
@@ -215,7 +215,7 @@ async fn test_wraparound(
     let cnt_addr = tim_r.regs_core().cnt().as_ptr() as *mut Word;
     let mut buf_r = [0 as Word; SMALL];
     let req_r = dma_r.request();
-    let mut ch_r = Channel::new(dma_r, irqs!(UART));
+    let mut ch_r = Channel::new(dma_r, irqs!(DMA));
     setup_timer(&mut tim_r);
     tim_r.enable_update_dma(true);
     let mut rb_r = unsafe { ReadableRingBuffer::new(ch_r.reborrow(), req_r, cnt_addr, &mut buf_r, wopts()) };
@@ -251,10 +251,10 @@ async fn test_overrun_detection(tim: Peri<'static, peris::TIM_R>, dma: Peri<'sta
     let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
     let mut buf = [0 as Word; SMALL];
     let req = dma.request();
-    let mut ch = Channel::new(dma, irqs!(UART));
+    let mut ch = Channel::new(dma, irqs!(DMA));
 
     setup_timer(&mut tim);
-    tim.set_frequency(Hertz(500_000), RoundTo::Closest);
+    tim.set_frequency(Hertz(500_000), RoundTo::Faster);
     tim.enable_update_dma(true);
 
     let mut rb = unsafe { ReadableRingBuffer::new(ch.reborrow(), req, cnt_addr, &mut buf, wopts()) };
@@ -287,10 +287,10 @@ async fn test_overrun_detection(tim: Peri<'static, peris::TIM_R>, dma: Peri<'sta
 
 async fn test_pause_resume(tim: Peri<'static, peris::TIM_W>, dma: Peri<'static, peris::DMA_W>) {
     let mut tim = Timer::new(tim);
-    let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
+    let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
     let mut buf = [0 as Word; RB_SIZE];
     let req = dma.request();
-    let mut ch = Channel::new(dma, irqs!(UART));
+    let mut ch = Channel::new(dma, irqs!(DMA));
 
     setup_timer(&mut tim);
     tim.enable_update_dma(true);
@@ -330,10 +330,10 @@ async fn test_drop_recreation(
     // WritableRingBuffer — first life
     {
         let mut tim = Timer::new(tim_w);
-        let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
+        let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_w.request();
-        let mut ch = Channel::new(dma_w, irqs!(UART));
+        let mut ch = Channel::new(dma_w, irqs!(DMA));
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { WritableRingBuffer::new(ch.reborrow(), req, ccr_addr, &mut buf, wopts()) };
@@ -346,10 +346,10 @@ async fn test_drop_recreation(
     // Second life on same hardware
     {
         let mut tim = Timer::new(tim_w);
-        let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
+        let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_w.request();
-        let mut ch = Channel::new(dma_w, irqs!(UART));
+        let mut ch = Channel::new(dma_w, irqs!(DMA));
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { WritableRingBuffer::new(ch.reborrow(), req, ccr_addr, &mut buf, wopts()) };
@@ -367,7 +367,7 @@ async fn test_drop_recreation(
         let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_r.request();
-        let mut ch = Channel::new(dma_r, irqs!(UART));
+        let mut ch = Channel::new(dma_r, irqs!(DMA));
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { ReadableRingBuffer::new(ch.reborrow(), req, cnt_addr, &mut buf, wopts()) };
@@ -383,7 +383,7 @@ async fn test_drop_recreation(
         let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_r.request();
-        let mut ch = Channel::new(dma_r, irqs!(UART));
+        let mut ch = Channel::new(dma_r, irqs!(DMA));
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { ReadableRingBuffer::new(ch.reborrow(), req, cnt_addr, &mut buf, wopts()) };
@@ -408,10 +408,10 @@ async fn test_race_conditions(
     dma_r: Peri<'static, peris::DMA_R>,
 ) {
     let mut tim_w = Timer::new(tim_w);
-    let ccr_addr = tim_w.regs().ccr(0).as_ptr() as *mut Word;
+    let ccr_addr = tim_w.regs_gp16().ccr(0).as_ptr() as *mut Word;
     let mut buf_w = [0 as Word; 32];
     let req_w = dma_w.request();
-    let mut ch_w = Channel::new(dma_w, irqs!(UART));
+    let mut ch_w = Channel::new(dma_w, irqs!(DMA));
     setup_timer(&mut tim_w);
     tim_w.enable_update_dma(true);
     let mut rb_w = unsafe { WritableRingBuffer::new(ch_w.reborrow(), req_w, ccr_addr, &mut buf_w, wopts()) };
@@ -421,7 +421,7 @@ async fn test_race_conditions(
     let cnt_addr = tim_r.regs_core().cnt().as_ptr() as *mut Word;
     let mut buf_r = [0 as Word; 32];
     let req_r = dma_r.request();
-    let mut ch_r = Channel::new(dma_r, irqs!(UART));
+    let mut ch_r = Channel::new(dma_r, irqs!(DMA));
     setup_timer(&mut tim_r);
     tim_r.enable_update_dma(true);
     let mut rb_r = unsafe { ReadableRingBuffer::new(ch_r.reborrow(), req_r, cnt_addr, &mut buf_r, wopts()) };
@@ -474,10 +474,10 @@ async fn test_exact_semantics(
     // WritableRingBuffer::write_exact
     {
         let mut tim = Timer::new(tim_w);
-        let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
+        let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_w.request();
-        let mut ch = Channel::new(dma_w, irqs!(UART));
+        let mut ch = Channel::new(dma_w, irqs!(DMA));
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { WritableRingBuffer::new(ch.reborrow(), req, ccr_addr, &mut buf, wopts()) };
@@ -502,7 +502,7 @@ async fn test_exact_semantics(
         let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_r.request();
-        let mut ch = Channel::new(dma_r, irqs!(UART));
+        let mut ch = Channel::new(dma_r, irqs!(DMA));
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { ReadableRingBuffer::new(ch.reborrow(), req, cnt_addr, &mut buf, wopts()) };

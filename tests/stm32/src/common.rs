@@ -161,7 +161,11 @@ define_peris!(
     SPI = SPI1, SPI_SCK = PA5, SPI_MOSI = PA7, SPI_MISO = PA6, SPI_TX_DMA = DMA2_CH3, SPI_RX_DMA = DMA2_CH2,
     ADC = ADC1, DAC = DAC1, DAC_PIN = PA4,
     CAN = CAN1, CAN_RX = PD0, CAN_TX = PD1,
-    TIM_W = TIM2, TIM_R = TIM3, DMA_W = DMA1_STREAM0, DMA_R = DMA1_STREAM1,
+    TIM_W = TIM2, TIM_R = TIM3, DMA_W = DMA1_CH1, DMA_R = DMA1_CH2,
+    @irq DMA = {
+        DMA1_STREAM1 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH1>;
+        DMA1_STREAM2 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH2>;
+    },
     @irq UART = {
         USART6 => embassy_stm32::usart::InterruptHandler<embassy_stm32::peripherals::USART6>,
             embassy_stm32::usart::BufferedInterruptHandler<embassy_stm32::peripherals::USART6>;
