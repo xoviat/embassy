@@ -5,10 +5,11 @@ mod common;
 
 use common::*;
 use embassy_executor::Spawner;
+use embassy_stm32::Peri;
 use embassy_stm32::dma::{Channel, Priority, ReadableRingBuffer, TransferOptions, WritableRingBuffer};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::timer::UpDma;
-use embassy_stm32::timer::low_level::Timer;
+use embassy_stm32::timer::GeneralInstance4Channel;
+use embassy_stm32::timer::low_level::{RoundTo, Timer};
 use embassy_time::{Duration, Instant, Timer as AsyncTimer};
 
 const RB_SIZE: usize = 64;
@@ -78,14 +79,13 @@ async fn main(_spawner: Spawner) {
 // =============================================================================
 
 fn wopts() -> TransferOptions {
-    TransferOptions {
-        priority: Priority::VeryHigh,
-        ..Default::default()
-    }
+    let mut opts = TransferOptions::default();
+    opts.priority = Priority::VeryHigh;
+    opts
 }
 
-fn setup_timer<T: embassy_stm32::timer::BasicInstance>(tim: &mut Timer<'static, T>) {
-    tim.set_frequency(Hertz(TIMER_FREQ));
+fn setup_timer<T: GeneralInstance4Channel>(tim: &mut Timer<'static, T>) {
+    tim.set_frequency(Hertz(TIMER_FREQ), RoundTo::Closest);
     tim.set_counting_mode(embassy_stm32::timer::low_level::CountingMode::EdgeAlignedUp);
     tim.enable_outputs();
     tim.start();
@@ -95,7 +95,7 @@ async fn wait_for<F: FnMut() -> bool>(mut f: F, timeout_us: u64) {
     let end = Instant::now() + Duration::from_micros(timeout_us);
     while !f() {
         if Instant::now() > end {
-            panic!("wait_for timeout");
+            core::panic!("wait_for timeout");
         }
         AsyncTimer::after(Duration::from_micros(10)).await;
     }
@@ -105,9 +105,9 @@ async fn wait_for<F: FnMut() -> bool>(mut f: F, timeout_us: u64) {
 // PHASE 1: WritableRingBuffer
 // =============================================================================
 
-async fn test_writable_basic(tim: peris::TIM_W, dma: peris::DMA_W) {
+async fn test_writable_basic(tim: Peri<'static, peris::TIM_W>, dma: Peri<'static, peris::DMA_W>) {
     let mut tim = Timer::new(tim);
-    let ccr_addr = tim.regs_core().ccr(0).as_ptr() as *mut Word;
+    let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
     let mut dma_buf = [0 as Word; RB_SIZE];
 
     let req = dma.request();
@@ -122,7 +122,7 @@ async fn test_writable_basic(tim: peris::TIM_W, dma: peris::DMA_W) {
     let (written, remaining) = rb.write(&prefill).unwrap();
     crate::assert_eq!(written, RB_SIZE / 2);
     crate::assert_eq!(remaining, RB_SIZE / 2);
-    crate::assert_eq!(rb.len(), RB_SIZE / 2);
+    crate::assert_eq!(rb.len().unwrap(), RB_SIZE / 2);
     crate::assert_eq!(rb.capacity(), RB_SIZE);
 
     rb.start();
@@ -149,7 +149,7 @@ async fn test_writable_basic(tim: peris::TIM_W, dma: peris::DMA_W) {
 // PHASE 2: ReadableRingBuffer
 // =============================================================================
 
-async fn test_readable_basic(tim: peris::TIM_R, dma: peris::DMA_R) {
+async fn test_readable_basic(tim: Peri<'static, peris::TIM_R>, dma: Peri<'static, peris::DMA_R>) {
     let mut tim = Timer::new(tim);
     let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
     let mut dma_buf = [0 as Word; RB_SIZE];
@@ -193,11 +193,16 @@ async fn test_readable_basic(tim: peris::TIM_R, dma: peris::DMA_R) {
 // PHASE 3: Wraparound stress
 // =============================================================================
 
-async fn test_wraparound(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: peris::TIM_R, dma_r: peris::DMA_R) {
+async fn test_wraparound(
+    tim_w: Peri<'static, peris::TIM_W>,
+    dma_w: Peri<'static, peris::DMA_W>,
+    tim_r: Peri<'static, peris::TIM_R>,
+    dma_r: Peri<'static, peris::DMA_R>,
+) {
     const SMALL: usize = 16;
 
     let mut tim_w = Timer::new(tim_w);
-    let ccr_addr = tim_w.regs_core().ccr(0).as_ptr() as *mut Word;
+    let ccr_addr = tim_w.regs().ccr(0).as_ptr() as *mut Word;
     let mut buf_w = [0 as Word; SMALL];
     let req_w = dma_w.request();
     let mut ch_w = Channel::new(dma_w, irqs!(UART));
@@ -240,7 +245,7 @@ async fn test_wraparound(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: peris:
 // PHASE 4: Overrun detection
 // =============================================================================
 
-async fn test_overrun_detection(tim: peris::TIM_R, dma: peris::DMA_R) {
+async fn test_overrun_detection(tim: Peri<'static, peris::TIM_R>, dma: Peri<'static, peris::DMA_R>) {
     const SMALL: usize = 16;
     let mut tim = Timer::new(tim);
     let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
@@ -249,7 +254,7 @@ async fn test_overrun_detection(tim: peris::TIM_R, dma: peris::DMA_R) {
     let mut ch = Channel::new(dma, irqs!(UART));
 
     setup_timer(&mut tim);
-    tim.set_frequency(Hertz(500_000));
+    tim.set_frequency(Hertz(500_000), RoundTo::Closest);
     tim.enable_update_dma(true);
 
     let mut rb = unsafe { ReadableRingBuffer::new(ch.reborrow(), req, cnt_addr, &mut buf, wopts()) };
@@ -280,9 +285,9 @@ async fn test_overrun_detection(tim: peris::TIM_R, dma: peris::DMA_R) {
 // PHASE 5: Pause / resume
 // =============================================================================
 
-async fn test_pause_resume(tim: peris::TIM_W, dma: peris::DMA_W) {
+async fn test_pause_resume(tim: Peri<'static, peris::TIM_W>, dma: Peri<'static, peris::DMA_W>) {
     let mut tim = Timer::new(tim);
-    let ccr_addr = tim.regs_core().ccr(0).as_ptr() as *mut Word;
+    let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
     let mut buf = [0 as Word; RB_SIZE];
     let req = dma.request();
     let mut ch = Channel::new(dma, irqs!(UART));
@@ -300,7 +305,7 @@ async fn test_pause_resume(tim: peris::TIM_W, dma: peris::DMA_W) {
 
     let (w, _) = rb.write(&[0xABCD as Word; 10]).unwrap();
     crate::assert_eq!(w, 10);
-    crate::assert_eq!(rb.len(), 10);
+    crate::assert_eq!(rb.len().unwrap(), 10);
 
     rb.start();
     crate::assert!(rb.is_running());
@@ -316,11 +321,16 @@ async fn test_pause_resume(tim: peris::TIM_W, dma: peris::DMA_W) {
 // PHASE 6: Drop and recreation
 // =============================================================================
 
-async fn test_drop_recreation(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: peris::TIM_R, dma_r: peris::DMA_R) {
+async fn test_drop_recreation(
+    tim_w: Peri<'static, peris::TIM_W>,
+    dma_w: Peri<'static, peris::DMA_W>,
+    tim_r: Peri<'static, peris::TIM_R>,
+    dma_r: Peri<'static, peris::DMA_R>,
+) {
     // WritableRingBuffer — first life
     {
         let mut tim = Timer::new(tim_w);
-        let ccr_addr = tim.regs_core().ccr(0).as_ptr() as *mut Word;
+        let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_w.request();
         let mut ch = Channel::new(dma_w, irqs!(UART));
@@ -336,7 +346,7 @@ async fn test_drop_recreation(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: p
     // Second life on same hardware
     {
         let mut tim = Timer::new(tim_w);
-        let ccr_addr = tim.regs_core().ccr(0).as_ptr() as *mut Word;
+        let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_w.request();
         let mut ch = Channel::new(dma_w, irqs!(UART));
@@ -391,9 +401,14 @@ async fn test_drop_recreation(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: p
 // PHASE 7: Race-condition stress
 // =============================================================================
 
-async fn test_race_conditions(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: peris::TIM_R, dma_r: peris::DMA_R) {
+async fn test_race_conditions(
+    tim_w: Peri<'static, peris::TIM_W>,
+    dma_w: Peri<'static, peris::DMA_W>,
+    tim_r: Peri<'static, peris::TIM_R>,
+    dma_r: Peri<'static, peris::DMA_R>,
+) {
     let mut tim_w = Timer::new(tim_w);
-    let ccr_addr = tim_w.regs_core().ccr(0).as_ptr() as *mut Word;
+    let ccr_addr = tim_w.regs().ccr(0).as_ptr() as *mut Word;
     let mut buf_w = [0 as Word; 32];
     let req_w = dma_w.request();
     let mut ch_w = Channel::new(dma_w, irqs!(UART));
@@ -450,11 +465,16 @@ async fn test_race_conditions(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: p
 // PHASE 8: Exact read/write semantics
 // =============================================================================
 
-async fn test_exact_semantics(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: peris::TIM_R, dma_r: peris::DMA_R) {
+async fn test_exact_semantics(
+    tim_w: Peri<'static, peris::TIM_W>,
+    dma_w: Peri<'static, peris::DMA_W>,
+    tim_r: Peri<'static, peris::TIM_R>,
+    dma_r: Peri<'static, peris::DMA_R>,
+) {
     // WritableRingBuffer::write_exact
     {
         let mut tim = Timer::new(tim_w);
-        let ccr_addr = tim.regs_core().ccr(0).as_ptr() as *mut Word;
+        let ccr_addr = tim.regs().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = dma_w.request();
         let mut ch = Channel::new(dma_w, irqs!(UART));
@@ -464,11 +484,11 @@ async fn test_exact_semantics(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: p
         rb.start();
 
         let data = [0xBEEF as Word; 20];
-        rb.write_exact(&data).unwrap();
+        rb.write_exact(&data).await.unwrap();
 
         let huge = [0 as Word; RB_SIZE + 1];
         crate::assert!(
-            rb.write_exact(&huge).is_err(),
+            rb.write_exact(&huge).await.is_err(),
             "write_exact should fail when over-capacity"
         );
 
@@ -491,12 +511,12 @@ async fn test_exact_semantics(tim_w: peris::TIM_W, dma_w: peris::DMA_W, tim_r: p
         AsyncTimer::after(Duration::from_millis(5)).await;
 
         let mut out = [0 as Word; 4];
-        let remaining = rb.read_exact(&mut out).unwrap();
+        let remaining = rb.read_exact(&mut out).await.unwrap();
         info!("read_exact remaining: {}", remaining);
 
         let mut huge = [0 as Word; RB_SIZE + 1];
         crate::assert!(
-            rb.read_exact(&mut huge).is_err(),
+            rb.read_exact(&mut huge).await.is_err(),
             "read_exact should fail when not enough data"
         );
 
