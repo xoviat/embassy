@@ -5,11 +5,12 @@ mod common;
 
 use common::*;
 use embassy_executor::Spawner;
-use embassy_stm32::Peri;
-use embassy_stm32::dma::{Channel, Priority, ReadableRingBuffer, TransferOptions, WritableRingBuffer};
+use embassy_stm32::dma::{Channel, ChannelInstance, Priority, ReadableRingBuffer, TransferOptions, WritableRingBuffer};
+use embassy_stm32::interrupt::typelevel::Binding;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::low_level::{RoundTo, Timer};
 use embassy_stm32::timer::{GeneralInstance4Channel, UpDma};
+use embassy_stm32::{Peri, dma};
 use embassy_time::{Duration, Instant, Timer as AsyncTimer};
 
 const RB_SIZE: usize = 64;
@@ -37,41 +38,71 @@ async fn main(_spawner: Spawner) {
         };
     }
 
+    let irqs = irqs!(DMA);
+
     let mut tim_w = peri!(p, TIM_W);
     let mut dma_w = peri!(p, DMA_W);
     let mut tim_r = peri!(p, TIM_R);
     let mut dma_r = peri!(p, DMA_R);
 
     info!("[1/8] WritableRingBuffer basic...");
-    test_writable_basic(tim_w.reborrow(), dma_w.reborrow()).await;
+    test_writable_basic(tim_w.reborrow(), dma_w.reborrow(), irqs).await;
     check_budget!();
 
     info!("[2/8] ReadableRingBuffer basic...");
-    test_readable_basic(tim_r.reborrow(), dma_r.reborrow()).await;
+    test_readable_basic(tim_r.reborrow(), dma_r.reborrow(), irqs).await;
     check_budget!();
 
     info!("[3/8] Wraparound stress...");
-    test_wraparound(tim_w.reborrow(), dma_w.reborrow(), tim_r.reborrow(), dma_r.reborrow()).await;
+    test_wraparound(
+        tim_w.reborrow(),
+        dma_w.reborrow(),
+        tim_r.reborrow(),
+        dma_r.reborrow(),
+        irqs,
+    )
+    .await;
     check_budget!();
 
     info!("[4/8] Overrun detection...");
-    test_overrun_detection(tim_r.reborrow(), dma_r.reborrow()).await;
+    test_overrun_detection(tim_r.reborrow(), dma_r.reborrow(), irqs).await;
     check_budget!();
 
     info!("[5/8] Pause / resume...");
-    test_pause_resume(tim_w.reborrow(), dma_w.reborrow()).await;
+    test_pause_resume(tim_w.reborrow(), dma_w.reborrow(), irqs).await;
     check_budget!();
 
     info!("[6/8] Drop and recreation...");
-    test_drop_recreation(tim_w.reborrow(), dma_w.reborrow(), tim_r.reborrow(), dma_r.reborrow()).await;
+    test_drop_recreation(
+        tim_w.reborrow(),
+        dma_w.reborrow(),
+        tim_r.reborrow(),
+        dma_r.reborrow(),
+        irqs,
+    )
+    .await;
     check_budget!();
 
     info!("[7/8] Race condition stress...");
-    test_race_conditions(tim_w.reborrow(), dma_w.reborrow(), tim_r.reborrow(), dma_r.reborrow()).await;
+    test_race_conditions(
+        tim_w.reborrow(),
+        dma_w.reborrow(),
+        tim_r.reborrow(),
+        dma_r.reborrow(),
+        irqs,
+    )
+    .await;
     check_budget!();
 
     info!("[8/8] Exact semantics...");
-    test_exact_semantics(tim_w.reborrow(), dma_w.reborrow(), tim_r.reborrow(), dma_r.reborrow()).await;
+    test_exact_semantics(
+        tim_w.reborrow(),
+        dma_w.reborrow(),
+        tim_r.reborrow(),
+        dma_r.reborrow(),
+        irqs,
+    )
+    .await;
     check_budget!();
 
     info!("========================================");
@@ -110,13 +141,17 @@ async fn wait_for<F: FnMut() -> bool>(mut f: F, timeout_us: u64) {
 // PHASE 1: WritableRingBuffer
 // =============================================================================
 
-async fn test_writable_basic(tim: Peri<'_, peris::TIM_W>, dma: Peri<'_, peris::DMA_W>) {
+async fn test_writable_basic(
+    tim: Peri<'_, peris::TIM_W>,
+    dma: Peri<'_, peris::DMA_W>,
+    irq: impl Binding<<peris::DMA_W as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_W>>,
+) {
     let mut tim = Timer::new(tim);
     let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
     let mut dma_buf = [0 as Word; RB_SIZE];
 
     let req = <peris::DMA_W as UpDma<peris::TIM_W>>::request(&*dma);
-    let mut ch = Channel::new(dma, irqs!(DMA));
+    let mut ch = Channel::new(dma, irq);
 
     setup_timer(&mut tim);
     tim.enable_update_dma(true);
@@ -154,13 +189,17 @@ async fn test_writable_basic(tim: Peri<'_, peris::TIM_W>, dma: Peri<'_, peris::D
 // PHASE 2: ReadableRingBuffer
 // =============================================================================
 
-async fn test_readable_basic(tim: Peri<'_, peris::TIM_R>, dma: Peri<'_, peris::DMA_R>) {
+async fn test_readable_basic(
+    tim: Peri<'_, peris::TIM_R>,
+    dma: Peri<'_, peris::DMA_R>,
+    irq: impl Binding<<peris::DMA_R as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_R>>,
+) {
     let mut tim = Timer::new(tim);
     let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
     let mut dma_buf = [0 as Word; RB_SIZE];
 
     let req = <peris::DMA_R as UpDma<peris::TIM_R>>::request(&*dma);
-    let mut ch = Channel::new(dma, irqs!(DMA));
+    let mut ch = Channel::new(dma, irq);
 
     setup_timer(&mut tim);
     tim.enable_update_dma(true);
@@ -203,6 +242,8 @@ async fn test_wraparound(
     dma_w: Peri<'_, peris::DMA_W>,
     tim_r: Peri<'_, peris::TIM_R>,
     dma_r: Peri<'_, peris::DMA_R>,
+    irq: impl Binding<<peris::DMA_R as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_R>>
+    + Binding<<peris::DMA_W as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_W>>,
 ) {
     const SMALL: usize = 16;
 
@@ -210,7 +251,7 @@ async fn test_wraparound(
     let ccr_addr = tim_w.regs_gp16().ccr(0).as_ptr() as *mut Word;
     let mut buf_w = [0 as Word; SMALL];
     let req_w = <peris::DMA_W as UpDma<peris::TIM_W>>::request(&*dma_w);
-    let mut ch_w = Channel::new(dma_w, irqs!(DMA));
+    let mut ch_w = Channel::new(dma_w, irq);
     setup_timer(&mut tim_w);
     tim_w.enable_update_dma(true);
     let mut rb_w = unsafe { WritableRingBuffer::new(ch_w.reborrow(), req_w, ccr_addr, &mut buf_w, wopts()) };
@@ -220,7 +261,7 @@ async fn test_wraparound(
     let cnt_addr = tim_r.regs_core().cnt().as_ptr() as *mut Word;
     let mut buf_r = [0 as Word; SMALL];
     let req_r = <peris::DMA_R as UpDma<peris::TIM_R>>::request(&*dma_r);
-    let mut ch_r = Channel::new(dma_r, irqs!(DMA));
+    let mut ch_r = Channel::new(dma_r, irq);
     setup_timer(&mut tim_r);
     tim_r.enable_update_dma(true);
     let mut rb_r = unsafe { ReadableRingBuffer::new(ch_r.reborrow(), req_r, cnt_addr, &mut buf_r, wopts()) };
@@ -250,13 +291,17 @@ async fn test_wraparound(
 // PHASE 4: Overrun detection
 // =============================================================================
 
-async fn test_overrun_detection(tim: Peri<'_, peris::TIM_R>, dma: Peri<'_, peris::DMA_R>) {
+async fn test_overrun_detection(
+    tim: Peri<'_, peris::TIM_R>,
+    dma: Peri<'_, peris::DMA_R>,
+    irq: impl Binding<<peris::DMA_R as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_R>>,
+) {
     const SMALL: usize = 16;
     let mut tim = Timer::new(tim);
     let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
     let mut buf = [0 as Word; SMALL];
     let req = <peris::DMA_R as UpDma<peris::TIM_R>>::request(&*dma);
-    let mut ch = Channel::new(dma, irqs!(DMA));
+    let mut ch = Channel::new(dma, irq);
 
     setup_timer(&mut tim);
     tim.set_frequency(Hertz(500_000), RoundTo::Faster);
@@ -290,12 +335,16 @@ async fn test_overrun_detection(tim: Peri<'_, peris::TIM_R>, dma: Peri<'_, peris
 // PHASE 5: Pause / resume
 // =============================================================================
 
-async fn test_pause_resume(tim: Peri<'_, peris::TIM_W>, dma: Peri<'_, peris::DMA_W>) {
+async fn test_pause_resume(
+    tim: Peri<'_, peris::TIM_W>,
+    dma: Peri<'_, peris::DMA_W>,
+    irq: impl Binding<<peris::DMA_W as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_W>>,
+) {
     let mut tim = Timer::new(tim);
     let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
     let mut buf = [0 as Word; RB_SIZE];
     let req = <peris::DMA_W as UpDma<peris::TIM_W>>::request(&*dma);
-    let mut ch = Channel::new(dma, irqs!(DMA));
+    let mut ch = Channel::new(dma, irq);
 
     setup_timer(&mut tim);
     tim.enable_update_dma(true);
@@ -331,6 +380,8 @@ async fn test_drop_recreation(
     mut dma_w: Peri<'_, peris::DMA_W>,
     mut tim_r: Peri<'_, peris::TIM_R>,
     mut dma_r: Peri<'_, peris::DMA_R>,
+    irq: impl Binding<<peris::DMA_R as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_R>>
+    + Binding<<peris::DMA_W as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_W>>,
 ) {
     // WritableRingBuffer — first life
     {
@@ -338,7 +389,7 @@ async fn test_drop_recreation(
         let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = <peris::DMA_W as UpDma<peris::TIM_W>>::request(&*dma_w);
-        let mut ch = Channel::new(dma_w.reborrow(), irqs!(DMA));
+        let mut ch = Channel::new(dma_w.reborrow(), irq);
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { WritableRingBuffer::new(ch.reborrow(), req, ccr_addr, &mut buf, wopts()) };
@@ -354,7 +405,7 @@ async fn test_drop_recreation(
         let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = <peris::DMA_W as UpDma<peris::TIM_W>>::request(&*dma_w);
-        let mut ch = Channel::new(dma_w.reborrow(), irqs!(DMA));
+        let mut ch = Channel::new(dma_w.reborrow(), irq);
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { WritableRingBuffer::new(ch.reborrow(), req, ccr_addr, &mut buf, wopts()) };
@@ -372,7 +423,7 @@ async fn test_drop_recreation(
         let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = <peris::DMA_R as UpDma<peris::TIM_R>>::request(&*dma_r);
-        let mut ch = Channel::new(dma_r.reborrow(), irqs!(DMA));
+        let mut ch = Channel::new(dma_r.reborrow(), irq);
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { ReadableRingBuffer::new(ch.reborrow(), req, cnt_addr, &mut buf, wopts()) };
@@ -388,7 +439,7 @@ async fn test_drop_recreation(
         let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = <peris::DMA_R as UpDma<peris::TIM_R>>::request(&*dma_r);
-        let mut ch = Channel::new(dma_r.reborrow(), irqs!(DMA));
+        let mut ch = Channel::new(dma_r.reborrow(), irq);
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { ReadableRingBuffer::new(ch.reborrow(), req, cnt_addr, &mut buf, wopts()) };
@@ -411,12 +462,14 @@ async fn test_race_conditions(
     dma_w: Peri<'_, peris::DMA_W>,
     tim_r: Peri<'_, peris::TIM_R>,
     dma_r: Peri<'_, peris::DMA_R>,
+    irq: impl Binding<<peris::DMA_R as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_R>>
+    + Binding<<peris::DMA_W as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_W>>,
 ) {
     let mut tim_w = Timer::new(tim_w);
     let ccr_addr = tim_w.regs_gp16().ccr(0).as_ptr() as *mut Word;
     let mut buf_w = [0 as Word; 32];
     let req_w = <peris::DMA_W as UpDma<peris::TIM_W>>::request(&*dma_w);
-    let mut ch_w = Channel::new(dma_w, irqs!(DMA));
+    let mut ch_w = Channel::new(dma_w, irq);
     setup_timer(&mut tim_w);
     tim_w.enable_update_dma(true);
     let mut rb_w = unsafe { WritableRingBuffer::new(ch_w.reborrow(), req_w, ccr_addr, &mut buf_w, wopts()) };
@@ -426,7 +479,7 @@ async fn test_race_conditions(
     let cnt_addr = tim_r.regs_core().cnt().as_ptr() as *mut Word;
     let mut buf_r = [0 as Word; 32];
     let req_r = <peris::DMA_R as UpDma<peris::TIM_R>>::request(&*dma_r);
-    let mut ch_r = Channel::new(dma_r, irqs!(DMA));
+    let mut ch_r = Channel::new(dma_r, irq);
     setup_timer(&mut tim_r);
     tim_r.enable_update_dma(true);
     let mut rb_r = unsafe { ReadableRingBuffer::new(ch_r.reborrow(), req_r, cnt_addr, &mut buf_r, wopts()) };
@@ -475,6 +528,8 @@ async fn test_exact_semantics(
     dma_w: Peri<'_, peris::DMA_W>,
     tim_r: Peri<'_, peris::TIM_R>,
     dma_r: Peri<'_, peris::DMA_R>,
+    irq: impl Binding<<peris::DMA_R as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_R>>
+    + Binding<<peris::DMA_W as ChannelInstance>::Interrupt, dma::InterruptHandler<peris::DMA_W>>,
 ) {
     // WritableRingBuffer::write_exact
     {
@@ -482,7 +537,7 @@ async fn test_exact_semantics(
         let ccr_addr = tim.regs_gp16().ccr(0).as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = <peris::DMA_W as UpDma<peris::TIM_W>>::request(&*dma_w);
-        let mut ch = Channel::new(dma_w, irqs!(DMA));
+        let mut ch = Channel::new(dma_w, irq);
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { WritableRingBuffer::new(ch.reborrow(), req, ccr_addr, &mut buf, wopts()) };
@@ -507,7 +562,7 @@ async fn test_exact_semantics(
         let cnt_addr = tim.regs_core().cnt().as_ptr() as *mut Word;
         let mut buf = [0 as Word; RB_SIZE];
         let req = <peris::DMA_R as UpDma<peris::TIM_R>>::request(&*dma_r);
-        let mut ch = Channel::new(dma_r, irqs!(DMA));
+        let mut ch = Channel::new(dma_r, irq);
         setup_timer(&mut tim);
         tim.enable_update_dma(true);
         let mut rb = unsafe { ReadableRingBuffer::new(ch.reborrow(), req, cnt_addr, &mut buf, wopts()) };
