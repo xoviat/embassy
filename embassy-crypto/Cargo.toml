@@ -27,9 +27,9 @@ build = [
 ]
 
 [dependencies]
-signature = { version = "3", default-features = false, features = ["digest"] }
+signature = { version = "3", default-features = false, features = ["digest", "rand_core"] }
 embassy-crypto-driver = { path = "../embassy-crypto-driver" }
-digest = { version = "0.11", default-features = false, features = ["mac"] }
+digest = { version = "0.11", default-features = false, features = ["mac", "zeroize"] }
 crypto-common = "0.2"
 cipher = { version = "0.5", default-features = false }
 aead = { version = "0.6", default-features = false }
@@ -88,6 +88,12 @@ p384-ecdsa = ["p384", "ecdsa", "p384/ecdsa"]
 pkcs8 = ["ec", "elliptic-curve/pkcs8", "p256?/pkcs8", "p384?/pkcs8"]
 
 
+## Software implementation of the `P256Ec` driver trait via `driver_rustcrypto`
+## (p256 crate underneath). Enables the p256 ECDSA machinery; without it, the
+## `p256_ec` high-level API compiles with no software EC stack, so an asm/HAL
+## backend can serve it — smaller code size for that use case.
+driver-p256-ec = ["p256-ecdsa", "p256/ecdh"]
+
 ## Use RustCrypto crates as a software fallback driver.
 driver-rustcrypto = [
     "driver-md5",
@@ -107,6 +113,7 @@ driver-rustcrypto = [
     "driver-aes256ccm",
     "driver-aes128cmac",
     "driver-aes256cmac",
+    "driver-p256-ec",
     "driver-p256-scalar-mul",
     "driver-p256-scalar-invert",
     "driver-p256-lincomb",

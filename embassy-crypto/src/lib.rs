@@ -28,6 +28,7 @@ use cipher::InOutBuf;
     feature = "driver-p384-scalar-mul",
     feature = "driver-p384-scalar-invert",
     feature = "driver-p384-lincomb",
+    feature = "driver-p256-ec",
 ))]
 mod driver_rustcrypto;
 
@@ -45,6 +46,8 @@ mod hash;
 
 pub use aes::*;
 pub use hash::*;
+
+pub mod asymmetric;
 
 #[allow(dead_code)]
 #[inline]

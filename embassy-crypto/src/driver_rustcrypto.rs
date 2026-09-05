@@ -1217,3 +1217,144 @@ impl embassy_crypto_driver::P384Lincomb for P384LincombDriver {
 
 #[cfg(feature = "driver-p384-lincomb")]
 embassy_crypto_driver::p384_lincomb_impl!(P384LincombDriver);
+
+// ===========================================================================
+// P-256 high-level EC operations (software, via the p256 crate)
+// ===========================================================================
+
+#[cfg(feature = "driver-p256-ec")]
+struct P256EcDriver;
+
+#[cfg(feature = "driver-p256-ec")]
+fn field_bytes(bytes: &[u8; 32]) -> p256::FieldBytes {
+    #[allow(deprecated)]
+    p256::FieldBytes::from_slice(bytes).clone()
+}
+
+#[cfg(feature = "driver-p256-ec")]
+fn sec1(p: &embassy_crypto_driver::P256AffinePoint) -> [u8; 65] {
+    let mut out = [0u8; 65];
+    out[0] = 0x04;
+    out[1..33].copy_from_slice(&p.x);
+    out[33..65].copy_from_slice(&p.y);
+    out
+}
+
+#[cfg(feature = "driver-p256-ec")]
+fn scalar(bytes: &[u8; 32]) -> Result<p256::Scalar, CryptoError> {
+    if bytes.iter().all(|&b| b == 0) {
+        return Err(CryptoError::InvalidKey);
+    }
+    use p256::elliptic_curve::PrimeField;
+    Option::<p256::Scalar>::from(p256::Scalar::from_repr(field_bytes(bytes))).ok_or(CryptoError::InvalidKey)
+}
+
+#[cfg(feature = "driver-p256-ec")]
+fn nonzero_scalar(bytes: &[u8; 32]) -> Result<p256::NonZeroScalar, CryptoError> {
+    use p256::elliptic_curve::PrimeField;
+    // from_repr rejects >= n; NonZeroScalar::new rejects zero.
+    let s = Option::<p256::Scalar>::from(p256::Scalar::from_repr(field_bytes(bytes))).ok_or(CryptoError::InvalidKey)?;
+    Option::<p256::NonZeroScalar>::from(p256::NonZeroScalar::new(s)).ok_or(CryptoError::InvalidKey)
+}
+
+#[cfg(feature = "driver-p256-ec")]
+fn point_xy(sk: &p256::SecretKey) -> ([u8; 32], [u8; 32]) {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    let ep = sk.public_key().to_encoded_point(false);
+    let mut x = [0u8; 32];
+    let mut y = [0u8; 32];
+    x.copy_from_slice(ep.x().unwrap());
+    y.copy_from_slice(ep.y().unwrap());
+    (x, y)
+}
+
+#[cfg(feature = "driver-p256-ec")]
+impl embassy_crypto_driver::P256Ec for P256EcDriver {
+    fn generate_keypair(
+        rng: &mut dyn embassy_crypto_driver::Rng,
+    ) -> Result<
+        (
+            embassy_crypto_driver::P256Scalar,
+            embassy_crypto_driver::P256AffinePoint,
+        ),
+        CryptoError,
+    > {
+        let mut b = [0u8; 32];
+        loop {
+            rng.rng_fill(&mut b).map_err(|_| CryptoError::HardwareError)?;
+            if let Ok(sk) = p256::SecretKey::from_slice(&b) {
+                let (x, y) = point_xy(&sk);
+                return Ok((
+                    embassy_crypto_driver::P256Scalar(b),
+                    embassy_crypto_driver::P256AffinePoint { x, y },
+                ));
+            }
+        }
+    }
+
+    fn public_key(k: embassy_crypto_driver::P256Scalar) -> Result<embassy_crypto_driver::P256AffinePoint, CryptoError> {
+        let sk = p256::SecretKey::from_slice(&k.0).map_err(|_| CryptoError::InvalidKey)?;
+        let (x, y) = point_xy(&sk);
+        Ok(embassy_crypto_driver::P256AffinePoint { x, y })
+    }
+
+    fn validate_point(p: &embassy_crypto_driver::P256AffinePoint) -> bool {
+        p256::PublicKey::from_sec1_bytes(&sec1(p)).is_ok()
+    }
+
+    fn ecdh_shared_secret(
+        k: embassy_crypto_driver::P256Scalar,
+        peer: embassy_crypto_driver::P256AffinePoint,
+    ) -> Result<[u8; 32], CryptoError> {
+        let nz = nonzero_scalar(&k.0)?;
+        let pk = p256::PublicKey::from_sec1_bytes(&sec1(&peer)).map_err(|_| CryptoError::InvalidKey)?;
+        let secret = p256::elliptic_curve::ecdh::diffie_hellman(&nz, pk.as_affine());
+        let mut out = [0u8; 32];
+        out.copy_from_slice(secret.raw_secret_bytes());
+        Ok(out)
+    }
+
+    fn ecdsa_sign(
+        k: embassy_crypto_driver::P256Scalar,
+        digest: &[u8; 32],
+        rng: &mut dyn embassy_crypto_driver::Rng,
+    ) -> Result<embassy_crypto_driver::P256Signature, CryptoError> {
+        use ecdsa::hazmat::SignPrimitive;
+        let d = scalar(&k.0)?;
+        let mut nb = [0u8; 32];
+        let nonce = loop {
+            rng.rng_fill(&mut nb).map_err(|_| CryptoError::HardwareError)?;
+            if let Ok(n) = scalar(&nb) {
+                break n;
+            }
+        };
+        let prehash = field_bytes(digest);
+        let (sig, _rid) = d
+            .try_sign_prehashed(nonce, &prehash)
+            .map_err(|_| CryptoError::InvalidSignature)?;
+        let sig = sig.normalize_s().unwrap_or(sig);
+        let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
+        r.copy_from_slice(&sig.r().to_bytes());
+        s.copy_from_slice(&sig.s().to_bytes());
+        Ok(embassy_crypto_driver::P256Signature {
+            r: embassy_crypto_driver::P256Scalar(r),
+            s: embassy_crypto_driver::P256Scalar(s),
+        })
+    }
+
+    fn ecdsa_verify(
+        q: embassy_crypto_driver::P256AffinePoint,
+        digest: &[u8; 32],
+        sig: &embassy_crypto_driver::P256Signature,
+    ) -> Result<(), CryptoError> {
+        use ecdsa::signature::hazmat::PrehashVerifier;
+        let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1(&q)).map_err(|_| CryptoError::InvalidKey)?;
+        let signature = p256::ecdsa::Signature::from_scalars(field_bytes(&sig.r.0), field_bytes(&sig.s.0))
+            .map_err(|_| CryptoError::InvalidSignature)?;
+        vk.verify_prehash(digest, &signature)
+            .map_err(|_| CryptoError::InvalidSignature)
+    }
+}
+
+#[cfg(feature = "driver-p256-ec")]
+embassy_crypto_driver::p256_ec_impl!(P256EcDriver);

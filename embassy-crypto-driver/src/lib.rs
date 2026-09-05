@@ -105,6 +105,22 @@ impl<'inp, 'out, T> InOutBuf<'inp, 'out, T> {
     }
 }
 
+// ===========================================================================
+// Randomness source
+// ===========================================================================
+
+/// Caller-provided entropy source for crypto operations that need fresh
+/// randomness (ECDSA nonces, ephemeral key generation).
+///
+/// Object-safe so it can be passed as `&mut dyn Rng` into driver traits.
+/// Production implementations wrap a hardware TRNG or a CSPRNG seeded from
+/// one. Test code may inject a deterministic implementation (seeded DRBG or
+/// fixed bytes) to get reproducible outputs for known-answer tests.
+pub trait Rng {
+    /// Fill `buf` with cryptographically secure random bytes.
+    fn rng_fill(&mut self, buf: &mut [u8]) -> Result<(), CryptoError>;
+}
+
 unitrait::unitrait! {
     /// Md5 trait
     #[symbol_prefix = "_embassy_crypto_md5"]
@@ -1133,4 +1149,107 @@ unitrait::unitrait! {
     pub struct P384LincombImpl;
 
     macro p384_lincomb_impl(path = $crate);
+}
+
+// ===================================================================
+// P-256 high-level protocol operations
+// ===================================================================
+
+/// Raw P-256 ECDSA signature: canonical `(r, s)`, each 32 bytes big-endian.
+///
+/// This is the portable representation that crosses the backend boundary.
+/// `s` is low-S normalized (`s <= n/2`) as produced and as required for
+/// TLS 1.3 interop; verification must accept both low-S and high-S.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct P256Signature {
+    /// `r` component, canonical big-endian.
+    pub r: P256Scalar,
+    /// `s` component, canonical big-endian, low-S normalized.
+    pub s: P256Scalar,
+}
+
+unitrait::unitrait! {
+    /// High-level P-256 operations for TLS 1.3 and BLE Secure Connections.
+    ///
+    /// Each method corresponds to one operation a TLS 1.3 or BLE LE-SC stack
+    /// performs, so a hardware backend can implement it end-to-end where the
+    /// peripheral natively supports the whole operation. Everything below
+    /// this layer (field arithmetic, point encoding, hashing, HKDF) stays in
+    /// software in `embassy-crypto`, composing with [`Sha256`],
+    /// [`HmacSha256`], [`Aes128Gcm`] and [`Aes128Cmac`].
+    ///
+    /// ## Entropy
+    ///
+    /// Methods that need fresh randomness take `rng` and must draw their
+    /// nonce/ephemeral scalar from it, using rejection sampling until the
+    /// value lands in `[1, n-1]`. Hardware whose operation mandates an
+    /// internal entropy source (e.g. peripherals that generate the ECDSA
+    /// nonce on-chip from a TRNG) may ignore `rng`; such implementations must
+    /// document this. For deterministic known-answer tests, callers inject a
+    /// deterministic [`Rng`].
+    ///
+    /// ## Contract
+    ///
+    /// - All private/ephemeral scalars and signature components are canonical
+    ///   (`[1, n-1]`); non-canonical inputs return [`CryptoError::InvalidKey`]
+    ///   or [`CryptoError::InvalidInput`].
+    /// - All points are valid on-curve affine points in canonical big-endian
+    ///   encoding. Callers must run [`P256Ec::validate_point`] on untrusted
+    ///   peer public keys (TLS 1.3 RFC 8446 4.4.3.2, BLE Core Spec Vol 6
+    ///   5.8.4.4) before [`P256Ec::ecdh_shared_secret`] or
+    ///   [`P256Ec::ecdsa_verify`].
+    /// - No secret-dependent timing w.r.t. private keys, nonces, or ephemeral
+    ///   scalars. [`P256Ec::ecdsa_verify`] may be variable-time.
+    /// - Implementations wipe nonce/scalar copies they materialize in RAM.
+    #[symbol_prefix = "_embassy_crypto_p256_ec"]
+    pub trait P256Ec {
+        /// Generate a fresh keypair: `d` uniform in `[1, n-1]`, `Q = d * G`.
+        ///
+        /// Used for TLS 1.3 ECDHE keygen and BLE LE-SC keygen.
+        fn generate_keypair(
+            rng: &mut dyn Rng,
+        ) -> Result<(P256Scalar, P256AffinePoint), CryptoError>;
+
+        /// Derive the public key `k * G` from a known private scalar.
+        ///
+        /// No RNG: used for persistent keys (e.g. a TLS static ECDSA identity
+        /// loaded from flash, or deriving a BLE public key from a stored
+        /// secret) where the caller already holds `k`.
+        fn public_key(k: P256Scalar) -> Result<P256AffinePoint, CryptoError>;
+
+        /// Validate that `p` is a non-identity point on the P-256 curve.
+        fn validate_point(p: &P256AffinePoint) -> bool;
+
+        /// ECDH shared secret: X coordinate of `k * peer`, big-endian.
+        ///
+        /// This is the TLS 1.3 `ecdhe_shared_secret` (fed into HKDF via
+        /// [`HmacSha256`]) and the BLE LE-SC `DHKey`.
+        fn ecdh_shared_secret(
+            k: P256Scalar,
+            peer: P256AffinePoint,
+        ) -> Result<[u8; 32], CryptoError>;
+
+        /// ECDSA sign a pre-hashed message (`ecdsa_secp256r1_sha256`).
+        ///
+        /// The nonce is drawn from `rng` unless the hardware mandates an
+        /// internal entropy source. Returns a low-S normalized signature.
+        fn ecdsa_sign(
+            k: P256Scalar,
+            digest: &[u8; 32],
+            rng: &mut dyn Rng,
+        ) -> Result<P256Signature, CryptoError>;
+
+        /// ECDSA verify a pre-hashed message. All inputs public; may be
+        /// variable-time. `Err(CryptoError::InvalidSignature)` on failure.
+        fn ecdsa_verify(
+            q: P256AffinePoint,
+            digest: &[u8; 32],
+            sig: &P256Signature,
+        ) -> Result<(), CryptoError>;
+    }
+
+    /// The global [`P256Ec`] implementation.
+    pub struct P256EcImpl;
+
+    macro p256_ec_impl(path = $crate);
 }
