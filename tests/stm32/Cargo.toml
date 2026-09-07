@@ -88,7 +88,7 @@ perf-client = { path = "../perf-client" }
 xarxa = { git = "https://github.com/embassy-rs/xarxa", rev = "14c369bbcbe8ee7167488ac9c9e18be059d83555", default-features = false }
 xarxa-driver = { git = "https://github.com/embassy-rs/xarxa", rev = "14c369bbcbe8ee7167488ac9c9e18be059d83555" }
 mcu-crypto-asm = { git = "https://github.com/kokroo/mcu-crypto-asm", branch = "driver-aes", features=["embassy-driver"] }
-embassy-crypto = { path = "../../embassy-crypto", features = ["p256", "driver-rustcrypto"] }
+embassy-crypto = { path = "../../embassy-crypto", features = ["p256"] }
 
 # embassy-crypto = { path = "../../embassy-crypto", features = ["p256" ] }  # error
 # embassy-crypto = { path = "../../embassy-crypto", features = ["p256", "driver-aes128gcm", "driver-aes128", "driver-hmac-sha2"] } # hang
