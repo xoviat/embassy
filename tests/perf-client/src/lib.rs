@@ -248,6 +248,7 @@ mod tls_impl {
             {
                 Ok(()) => {
                     info!("TLS connected, testing...");
+                    tls.set_flush_policy(embedded_tls::flush_policy::FlushPolicy::Relaxed);
                     tls
                 }
                 Err(e) => {
@@ -373,6 +374,10 @@ mod tls_impl {
                         error!("write error: {:?}", e);
                         return 0;
                     }
+                }
+                if let Err(e) = tls.flush().await {
+                    error!("flush error: {:?}", e);
+                    return 0;
                 }
                 match tls.read(&mut rx_buf).await {
                     Ok(0) => {
