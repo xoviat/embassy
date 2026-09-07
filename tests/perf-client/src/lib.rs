@@ -236,6 +236,7 @@ mod tls_impl {
                 error!("connect error: {:?}", e);
                 return 0;
             }
+            info!("socket connected");
             let config = TlsConfig::new();
             let mut tls = TlsConnection::new(socket, $read_buf, $write_buf);
             match tls

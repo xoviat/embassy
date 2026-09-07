@@ -285,9 +285,11 @@ impl_hmac!(
 );
 
 #[cfg(all(feature = "driver-hmac-sha2", feature = "driver-sha2"))]
+/// doc
 pub type HmacSha224 = ::hmac::Hmac<::sha2::Sha224>;
 
 #[cfg(all(feature = "driver-hmac-sha2", not(feature = "driver-sha2")))]
+/// doc
 pub type HmacSha224 = ::hmac::SimpleHmac<Sha224>;
 
 #[cfg(not(feature = "driver-hmac-sha2"))]
@@ -300,9 +302,11 @@ impl_hmac!(
 );
 
 #[cfg(all(feature = "driver-hmac-sha2", feature = "driver-sha2"))]
+/// doc
 pub type HmacSha256 = ::hmac::Hmac<::sha2::Sha256>;
 
 #[cfg(all(feature = "driver-hmac-sha2", not(feature = "driver-sha2")))]
+/// doc
 pub type HmacSha256 = ::hmac::SimpleHmac<Sha256>;
 
 #[cfg(not(feature = "driver-hmac-sha2"))]
@@ -315,9 +319,11 @@ impl_hmac!(
 );
 
 #[cfg(all(feature = "driver-hmac-sha2", feature = "driver-sha2"))]
+/// doc
 pub type HmacSha384 = ::hmac::Hmac<::sha2::Sha384>;
 
 #[cfg(all(feature = "driver-hmac-sha2", not(feature = "driver-sha2")))]
+/// doc
 pub type HmacSha384 = ::hmac::SimpleHmac<Sha384>;
 
 #[cfg(not(feature = "driver-hmac-sha2"))]
@@ -330,9 +336,11 @@ impl_hmac!(
 );
 
 #[cfg(all(feature = "driver-hmac-sha2", feature = "driver-sha2"))]
+/// doc
 pub type HmacSha512_224 = ::hmac::Hmac<::sha2::Sha512_224>;
 
 #[cfg(all(feature = "driver-hmac-sha2", not(feature = "driver-sha2")))]
+/// doc
 pub type HmacSha512_224 = ::hmac::SimpleHmac<Sha512_224>;
 
 #[cfg(not(feature = "driver-hmac-sha2"))]
@@ -345,9 +353,11 @@ impl_hmac!(
 );
 
 #[cfg(all(feature = "driver-hmac-sha2", feature = "driver-sha2"))]
+/// doc
 pub type HmacSha512_256 = ::hmac::Hmac<::sha2::Sha512_256>;
 
 #[cfg(all(feature = "driver-hmac-sha2", not(feature = "driver-sha2")))]
+/// doc
 pub type HmacSha512_256 = ::hmac::SimpleHmac<Sha512_256>;
 
 #[cfg(not(feature = "driver-hmac-sha2"))]
@@ -360,9 +370,11 @@ impl_hmac!(
 );
 
 #[cfg(all(feature = "driver-hmac-sha2", feature = "driver-sha2"))]
+/// doc
 pub type HmacSha512 = ::hmac::Hmac<::sha2::Sha512>;
 
 #[cfg(all(feature = "driver-hmac-sha2", not(feature = "driver-sha2")))]
+/// doc
 pub type HmacSha512 = ::hmac::SimpleHmac<Sha512>;
 
 #[cfg(not(feature = "driver-hmac-sha2"))]
