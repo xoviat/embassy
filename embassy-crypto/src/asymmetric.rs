@@ -1,7 +1,6 @@
 //! High-level asymmetric operations
 
 use embassy_crypto_driver::CryptoError;
-#[cfg(not(feature = "driver-p256-ec"))]
 use signature::rand_core::{CryptoRng, TryCryptoRng};
 
 /// Bridge: adapts an infallible RustCrypto RNG (`CryptoRng`) to the driver's
@@ -45,9 +44,7 @@ pub mod p256 {
     use signature::rand_core::{CryptoRng, TryCryptoRng};
     use signature::{DigestVerifier, RandomizedDigestSigner};
 
-    #[cfg(not(feature = "driver-p256-ec"))]
-    use crate::asymmetric::DriverRng;
-    use crate::asymmetric::TryDriverRng;
+    use crate::asymmetric::{DriverRng, TryDriverRng};
 
     /// P-256 private key: canonical scalar `d` in `[1, n-1]`.
     #[derive(Clone)]

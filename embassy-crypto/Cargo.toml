@@ -58,6 +58,7 @@ ecdsa = { version = "0.17", default-features = false, features = ["digest", "alg
 p256 = { version = "0.14", default-features = false, features = ["arithmetic"], optional = true }
 p384 = { version = "0.14", default-features = false, features = ["arithmetic"], optional = true }
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"], optional = true }
+defmt = "1.1.1"
 
 [dev-dependencies]
 p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "ecdh"] }
@@ -120,6 +121,7 @@ driver-rustcrypto = [
     "driver-aes256ccm",
     "driver-aes128cmac",
     "driver-aes256cmac",
+    "driver-p256-ec",
     "driver-p256-scalar-mul",
     "driver-p256-scalar-invert",
     "driver-p256-lincomb",
