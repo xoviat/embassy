@@ -259,6 +259,15 @@ where
     peripheral_initialized: bool,
     hmac_key_processed: bool,
     first_word_sent: bool,
+    /// True when the IN buffer holds the staged trigger word (the saveable
+    /// state: NBWP = 1, DINIS = 1). False when the buffer is empty (NBWP = 0,
+    /// e.g. right after INIT or after any DCAL-drained phase such as HMAC key
+    /// processing). The next feed unit must be block+1 words (17 for
+    /// SHA-256) from empty, and exactly one block (16 words) from the
+    /// saveable state; see update_blocking. Recorded from hardware at
+    /// store_context on hash_v3/v4 (where DINIS = 1 makes NBWP unambiguous);
+    /// tracked in software on hash_v1/v2, which have no readable equivalent.
+    staged: bool,
     buffer: ContextBuffer<A, M>,
     buflen: usize,
     imr: u32,
@@ -403,7 +412,7 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
                 long_hmac_key = true;
                 cr.set_init(true);
                 T::regs().cr().write_value(cr);
-                self.accumulate_blocking(key);
+                self.accumulate_blocking::<A>(key);
                 T::regs().str().write(|w| w.set_dcal(true));
                 while !T::regs().sr().read().dcis() {}
 
@@ -420,6 +429,7 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
             peripheral_initialized: long_hmac_key,
             hmac_key_processed: false,
             first_word_sent: false,
+            staged: false,
             buffer: <ContextBuffer<A, M>>::new(),
             buflen: 0,
             imr: 0,
@@ -440,7 +450,7 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
         if long_hmac_key {
             let key = H::key_ref(&ctx.key).unwrap();
             T::regs().cr().write_value(cr);
-            self.accumulate_blocking(key);
+            self.accumulate_blocking::<A>(key);
             T::regs().str().write(|w| w.set_dcal(true));
             while !T::regs().sr().read().dinis() {}
             ctx.hmac_key_processed = true;
@@ -472,12 +482,25 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
             ctx.id
         );
 
-        let bs = A::BLOCK_SIZE;
+        // Feed discipline (RM software feeding + suspend procedure):
+        //
+        // A block's digest is triggered only by the FIRST WORD OF THE NEXT
+        // BLOCK. The saveable state at store_context is therefore "total
+        // words fed == 1 (mod 16)": one staged word in DIN, FIFO empty,
+        // DINIS = 1. Measured on STM32H563 (v3 dump): 17 words from empty
+        // -> NBWP=1 (saveable); 17 words from the saveable state -> NBWP=2
+        // (DINIS never returns, store spins forever).
+        //
+        // Hence the feed unit is 16 words (one block) once the peripheral
+        // is in the saveable state, and 17 words (block + trigger) only
+        // from the empty state. ctx.buffer holds exactly one 17-word unit
+        // (A::BLOCK_SIZE + 4 bytes). DINIS is polled before each unit by
+        // accumulate_blocking, so a unit is never written while the
+        // previous block's digest is still draining the FIFO.
         let total = input.len() + ctx.buflen;
+        let min_feed = if ctx.staged { A::BLOCK_SIZE } else { ctx.buffer().len() };
 
-        // not enough data to process yet.
-        let buffer_len = ctx.buffer().len();
-        if total < bs || (total < buffer_len && !ctx.first_word_sent) {
+        if total < min_feed {
             let buflen = ctx.buflen;
             ctx.buffer_mut()[buflen..total].copy_from_slice(input);
             ctx.buflen = total;
@@ -486,51 +509,50 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
 
         self.load_context(ctx);
 
+        // The HMAC key phase ends with DCAL, which drains the DIN buffer to
+        // empty -- the message that follows restarts at the block+trigger unit.
+        let mut unit = if ctx.staged { A::BLOCK_SIZE } else { ctx.buffer().len() };
         if !ctx.hmac_key_processed
             && let Some(key) = H::key_ref(&ctx.key)
         {
-            self.accumulate_blocking(key);
+            self.accumulate_blocking::<A>(key);
             T::regs().str().write(|w| w.set_dcal(true));
             while !T::regs().sr().read().dinis() {}
             ctx.hmac_key_processed = true;
+            ctx.staged = false;
+            unit = ctx.buffer().len();
         }
 
+        // Append input to the buffer, feeding one unit at a time.
         let mut remaining = input;
-
-        // flush existing buffered data (or the very first word) through the buffer.
-        if ctx.buflen > 0 || !ctx.first_word_sent {
-            let fill = min(buffer_len - ctx.buflen, remaining.len());
+        while ctx.buflen + remaining.len() >= unit {
+            let fill = min(unit - ctx.buflen, remaining.len());
             let buflen = ctx.buflen;
             ctx.buffer_mut()[buflen..buflen + fill].copy_from_slice(&remaining[..fill]);
             ctx.buflen += fill;
             remaining = &remaining[fill..];
 
-            self.accumulate_blocking(&ctx.buffer()[..ctx.buflen]);
-            ctx.buflen = 0;
-            ctx.first_word_sent = true;
+            if ctx.buflen == unit {
+                self.accumulate_blocking::<A>(&ctx.buffer()[..unit]);
+                ctx.buflen = 0;
+                ctx.first_word_sent = true;
+                // A full unit always ends with the trigger word of the next
+                // block sitting in the IN buffer (FIFO empty, DIN holding one
+                // word): the saveable "staged" state. Tracked in software
+                // here; on hash_v3/v4 store_context re-reads it from NBWP/
+                // DINNE for hardware truth.
+                ctx.staged = true;
+                // Subsequent units are whole blocks (16 words).
+                unit = A::BLOCK_SIZE;
+            }
         }
 
-        // not enough left for another full block.
-        if remaining.len() < bs {
-            ctx.buffer_mut()[..remaining.len()].copy_from_slice(remaining);
-            ctx.buflen = remaining.len();
+        // Buffer the tail (< one block). The sub-block remainder is legal
+        // here only because finish_blocking ends the message with DCAL.
+        let buflen = ctx.buflen;
+        ctx.buffer_mut()[buflen..buflen + remaining.len()].copy_from_slice(remaining);
+        ctx.buflen += remaining.len();
 
-            // Save the peripheral context.
-            self.store_context(ctx);
-
-            return;
-        }
-
-        // process all remaining full blocks directly from the input slice.
-        let tail = remaining.len() % bs;
-        let blocks_len = remaining.len() - tail;
-
-        self.accumulate_blocking(&remaining[..blocks_len]);
-
-        ctx.buflen = tail;
-        ctx.buffer_mut()[..tail].copy_from_slice(&remaining[blocks_len..]);
-
-        // Save the peripheral context.
         self.store_context(ctx);
     }
 
@@ -552,14 +574,14 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
         if !ctx.hmac_key_processed
             && let Some(key) = H::key_ref(&ctx.key)
         {
-            self.accumulate_blocking(key);
+            self.accumulate_blocking::<A>(key);
             T::regs().str().write(|w| w.set_dcal(true));
             while !T::regs().sr().read().dinis() {}
             ctx.hmac_key_processed = true;
         }
 
         // Hash the leftover bytes, if any.
-        self.accumulate_blocking(&ctx.buffer()[0..ctx.buflen]);
+        self.accumulate_blocking::<A>(&ctx.buffer()[0..ctx.buflen]);
         ctx.buflen = 0;
 
         // Start the digest calculation.
@@ -568,7 +590,7 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
         // For HMAC, after message digest the peripheral waits for the outer key.
         if let Some(key) = H::key_ref(&ctx.key) {
             while !T::regs().sr().read().dinis() {}
-            self.accumulate_blocking(key);
+            self.accumulate_blocking::<A>(key);
             T::regs().str().write(|w| w.set_dcal(true));
         }
         // Block until digest computation is complete.
@@ -590,26 +612,41 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
             let word = hr[i];
             digest[(i * 4)..((i * 4) + 4)].copy_from_slice(word.to_be_bytes().as_slice());
         }
+
         digest_len_bytes
     }
 
     /// Push data into the hash core.
-    fn accumulate_blocking(&mut self, input: &[u8]) {
-        // Set the number of valid bits.
+    ///
+    /// Per the RM software-feeding procedure, software may write a new
+    /// quantum only once DINIS = 1 ("16 IN-buffer locations are free"). One
+    /// quantum is NBWE words (the block plus the word that triggers the
+    /// block's digest); after each quantum the buffer holds at most the one
+    /// staged word in DIN, which is the only state in which the context may
+    /// be saved. A partial final quantum is legal only when the caller ends
+    /// the message with DCAL (finish and HMAC key paths).
+    fn accumulate_blocking<A: AlgorithmSpec>(&mut self, input: &[u8]) {
+        if input.is_empty() {
+            return;
+        }
+        // Set the number of valid bits for the final partial word.
         let num_valid_bits: u8 = (8 * (input.len() % 4)) as u8;
         T::regs().str().modify(|w| w.set_nblw(num_valid_bits));
 
-        let mut chunks = input.chunks_exact(4);
-        for chunk in &mut chunks {
-            T::regs()
-                .din()
-                .write_value(u32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
-        let rem = chunks.remainder();
-        if !rem.is_empty() {
-            let mut word: [u8; 4] = [0; 4];
-            word[0..rem.len()].copy_from_slice(rem);
-            T::regs().din().write_value(u32::from_ne_bytes(word));
+        let quantum = A::BLOCK_SIZE / 4 + 1;
+        let total_words = input.len() / 4 + usize::from(input.len() % 4 != 0);
+        let mut word = 0;
+        while word < total_words {
+            if word % quantum == 0 {
+                // DINIS = 1: one full quantum can be accepted.
+                while !T::regs().sr().read().dinis() {}
+            }
+            let byte = word * 4;
+            let n = min(4, input.len() - byte);
+            let mut data: [u8; 4] = [0; 4];
+            data[..n].copy_from_slice(&input[byte..byte + n]);
+            T::regs().din().write_value(u32::from_ne_bytes(data));
+            word += 1;
         }
     }
 
@@ -625,8 +662,27 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
             self.next_id.wrapping_add(1)
         );
 
-        // Block waiting for data in ready.
+        // RM suspend (software-fed): "wait for BUSY = 0 then poll DINIS".
+        // DINIS = 1 guarantees <= 1 word remains in the IN buffer, which is
+        // the only state whose context is saveable.
+        while T::regs().sr().read().busy() {}
         while !T::regs().sr().read().dinis() {}
+
+        // DINIS = 1 means NBWP <= 1: the buffer either holds exactly the
+        // staged trigger word (saveable; next feed unit = one block) or is
+        // empty (next unit = block + trigger word). Record which.
+        //
+        // NBWP/DINNE only exist on hash_v3/hash_v4 status registers. On
+        // hash_v1/hash_v2 the identical staged state cannot be read back, so
+        // it is tracked in software (see update_blocking); the RM feed
+        // discipline is the same on all versions ("16 words, plus one if it
+        // is the first block" == NBWE words), so the tracked value matches
+        // what the hardware read would return.
+        #[cfg(any(hash_v3, hash_v4))]
+        {
+            let sr = T::regs().sr().read();
+            ctx.staged = sr.nbwp() != 0 || sr.dinne();
+        }
 
         // Store peripheral context.
         ctx.imr = T::regs().imr().read().0;
@@ -681,6 +737,13 @@ impl<'d, T: Instance, M: Mode> Hash<'d, T, M> {
                 T::regs().csr(i).write_value(ctx.csr.get(i));
             }
         }
+        // A full restore rewrites CR+INIT, so the hardware now holds THIS
+        // context's state regardless of what current_id said before. Claim
+        // ownership: without this, a subsequent ids-match skip on the
+        // previously-current context would use clobbered hardware (found by
+        // test_boundary_sizes n=68 m=1: finish of a fresh context between
+        // store and finish of another silently corrupts the digest).
+        self.current_id = Some(ctx.id);
         trace!("load_context: csr[0..{}] restored", count);
     }
 }
